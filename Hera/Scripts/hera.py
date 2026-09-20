@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.8"
+VERSION = "4.3.9"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2753,19 +2753,16 @@ class BetEntryTab(QWidget):
         self._lt.setWordWrap(False)
         self._lt.setShowGrid(False)
         self._lt.setFrameShape(QFrame.NoFrame)
-        self._lt.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._lt.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._lt.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._lt.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         hdr = self._lt.horizontalHeader()
-        hdr.setMinimumSectionSize(32)
+        hdr.setMinimumSectionSize(36)
         hdr.setStretchLastSection(False)
         hdr.setDefaultAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         hdr.setFixedHeight(26)
-        self._col_w = [118, 58, 168, 72, 64, 92, 64, 32]
-        for i, w in enumerate(self._col_w):
+        for i in range(8):
             hdr.setSectionResizeMode(i, QHeaderView.Fixed)
-            self._lt.setColumnWidth(i, w)
-        self._lt.setFixedWidth(sum(self._col_w) + 2)
         self._sync_table_height()
 
         tr = QHBoxLayout()
@@ -2774,22 +2771,36 @@ class BetEntryTab(QWidget):
         tr.addWidget(self._lt)
         tr.addStretch(1)
         outer.addLayout(tr)
-        outer.addSpacing(5)
+
+        self._btn_spacer = QWidget()
+        self._btn_spacer.setFixedHeight(100)
+        self._btn_spacer.setStyleSheet("background:transparent;")
+        outer.addWidget(self._btn_spacer)
 
         br = QHBoxLayout()
         br.setContentsMargins(0, 0, 0, 0)
         br.setSpacing(8)
-        ab = QPushButton("+ ADD LEG")
+        ghost_bd = (
+            f"QPushButton{{background:transparent;color:{GREEN};border:1px solid #000000;"
+            f"padding:5px 14px;}}"
+            f"QPushButton:hover{{color:#ffffff;border:1px solid #000000;}}"
+        )
+        submit_bd = (
+            f"QPushButton{{background:{GREEN};color:#000;border:1px solid #000000;"
+            f"border-radius:0px;padding:5px 14px;}}"
+            f"QPushButton:hover{{background:#22d022;border:1px solid #000000;}}"
+        )
+        ab = QPushButton("ADD LEG")
         ab.setFont(bb(fs))
-        ab.setStyleSheet(ghost_ss(GREEN))
+        ab.setStyleSheet(ghost_bd)
         ab.clicked.connect(self._add_leg)
         nb = QPushButton("NEW PARLAY")
         nb.setFont(bb(fs))
-        nb.setStyleSheet(ghost_ss(GREEN))
+        nb.setStyleSheet(ghost_bd)
         nb.clicked.connect(self._new_parlay)
         sb = QPushButton("SUBMIT PARLAY")
         sb.setFont(bb(fs))
-        sb.setStyleSheet(btn_ss(GREEN, "#000"))
+        sb.setStyleSheet(submit_bd)
         sb.clicked.connect(self._submit)
         br.addWidget(ab)
         br.addWidget(nb)
@@ -2810,6 +2821,7 @@ class BetEntryTab(QWidget):
         c.setStyleSheet(combo_ss())
         c.setMinimumHeight(28)
         c.setMaxVisibleItems(18)
+        c.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         c.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         if items:
             c.addItems(items)
@@ -2821,6 +2833,7 @@ class BetEntryTab(QWidget):
         e.setStyleSheet(input_ss())
         e.setMinimumHeight(28)
         e.setAlignment(Qt.AlignCenter)
+        e.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         e.setPlaceholderText(placeholder)
         return e
 
@@ -2832,10 +2845,30 @@ class BetEntryTab(QWidget):
         combo.view().setTextElideMode(Qt.ElideNone)
         combo.view().setMinimumWidth(widest)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._layout_legs_table()
+
+    def _layout_legs_table(self):
+        if not hasattr(self, "_lt"):
+            return
+        w = max(720, int(self.width() * 0.80))
+        self._lt.setFixedWidth(w)
+        # GAME TEAM PLAYER OU LINE MARKET ODDS X — leftover goes to PLAYER
+        mins = [150, 88, 220, 96, 96, 120, 88, 40]
+        extra = max(0, w - sum(mins) - 2)
+        widths = list(mins)
+        widths[2] += extra
+        for i, cw in enumerate(widths):
+            self._lt.setColumnWidth(i, cw)
+
     def _sync_table_height(self):
         hh = self._lt.horizontalHeader().height() or 26
         n = self._lt.rowCount()
         self._lt.setFixedHeight(hh + 32 * n)
+        if hasattr(self, "_btn_spacer"):
+            self._btn_spacer.setFixedHeight(50 if n else 100)
+        self._layout_legs_table()
 
     def _set_combo(self, combo, value):
         if not value:
