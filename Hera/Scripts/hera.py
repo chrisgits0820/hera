@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.23"
+VERSION = "4.3.24"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -1394,29 +1394,44 @@ class NavBar(QWidget):
 
         self._bank = QWidget()
         self._bank.setStyleSheet("background:transparent; border:none;")
-        self._bank.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self._bank.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         bl = QHBoxLayout(self._bank)
-        bl.setContentsMargins(18, 0, 10, 0)
+        bl.setContentsMargins(10, 0, 6, 0)
         bl.setSpacing(0)
 
-        STAT_F = bb(13)
+        STAT_F = bb(9)
         WHITE = "#ffffff"
         BET_BLUE = "#3d9eff"
         LOST_C = "#e06666"
         NET_Y = "#ffdc28"
+        BTN_SS = (
+            "QPushButton{{background:{bg};color:{fg};border:none;border-radius:0px;"
+            "padding:1px 7px;}}"
+            "QPushButton:hover{{background:{bg};}}"
+        )
+
+        def lock(lbl):
+            fm = QFontMetrics(lbl.font())
+            lbl.setFixedWidth(fm.horizontalAdvance(lbl.text()) + 4)
+            lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         def stat_pair(key, color):
             box = QWidget()
             box.setStyleSheet("background:transparent; border:none;")
+            box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
             hl = QHBoxLayout(box)
             hl.setContentsMargins(0, 0, 0, 0)
-            hl.setSpacing(4)
+            hl.setSpacing(3)
             k = QLabel(key)
             k.setFont(STAT_F)
-            k.setStyleSheet(f"color:{WHITE}; background:transparent; letter-spacing:1px;")
+            k.setStyleSheet(f"color:{WHITE}; background:transparent; letter-spacing:0px;")
+            k.setTextFormat(Qt.PlainText)
+            lock(k)
             v = QLabel("0")
             v.setFont(STAT_F)
-            v.setStyleSheet(f"color:{color}; background:transparent; letter-spacing:1px;")
+            v.setStyleSheet(f"color:{color}; background:transparent; letter-spacing:0px;")
+            v.setTextFormat(Qt.PlainText)
+            lock(v)
             hl.addWidget(k)
             hl.addWidget(v)
             return box, v
@@ -1425,7 +1440,7 @@ class NavBar(QWidget):
             sep = QFrame()
             sep.setFrameShape(QFrame.VLine)
             sep.setFixedWidth(1)
-            sep.setFixedHeight(18)
+            sep.setFixedHeight(14)
             sep.setStyleSheet(f"background:{BORDER}; border:none;")
             return sep
 
@@ -1439,29 +1454,32 @@ class NavBar(QWidget):
                 [self._wagers_box, self._bet_box, self._won_box, self._lost_box, self._net_box]):
             if i:
                 bl.addWidget(pipe())
-                bl.addSpacing(8)
+                bl.addSpacing(5)
             bl.addWidget(wdg)
-            bl.addSpacing(8)
+            bl.addSpacing(5)
 
-        bl.addSpacing(6)
+        bl.addSpacing(4)
         self._reset_btn = QPushButton("RESET")
         self._reset_btn.setFont(STAT_F)
         self._reset_btn.setCursor(Qt.PointingHandCursor)
-        self._reset_btn.setFixedHeight(24)
-        self._reset_btn.setStyleSheet(btn_ss(GREEN, "#000"))
+        self._reset_btn.setFixedHeight(18)
+        self._reset_btn.setStyleSheet(BTN_SS.format(bg=GREEN, fg="#000"))
         self._reset_btn.clicked.connect(self.reset_bankroll.emit)
         self._empty_btn = QPushButton("EMPTY")
         self._empty_btn.setFont(STAT_F)
         self._empty_btn.setCursor(Qt.PointingHandCursor)
-        self._empty_btn.setFixedHeight(24)
-        self._empty_btn.setStyleSheet(btn_ss("#cc0000", "#ffffff"))
+        self._empty_btn.setFixedHeight(18)
+        self._empty_btn.setStyleSheet(BTN_SS.format(bg="#cc0000", fg="#ffffff"))
         self._empty_btn.clicked.connect(self.empty_archive.emit)
+        fm = QFontMetrics(STAT_F)
+        self._reset_btn.setFixedWidth(fm.horizontalAdvance("RESET") + 16)
+        self._empty_btn.setFixedWidth(fm.horizontalAdvance("EMPTY") + 16)
         bl.addWidget(self._reset_btn)
-        bl.addSpacing(8)
+        bl.addSpacing(5)
         bl.addWidget(self._empty_btn)
 
         self._bank.setVisible(False)
-        lay.addWidget(self._bank)
+        lay.addWidget(self._bank, 0)
         lay.addStretch()
 
         for i, t in enumerate(["GAME TRACKER", "PLAY BY PLAY", "BET ENTRY", "ACTIVE LEGS", "ARCHIVE"]):
@@ -1486,11 +1504,17 @@ class NavBar(QWidget):
 
     def refresh_bankroll(self):
         t = display_archive_bankroll()
-        self._wagers_v.setText(str(t["wagers"]))
-        self._bet_v.setText(f"${t['bet']:.2f}")
-        self._won_v.setText(f"${t['won']:.2f}")
-        self._lost_v.setText(f"${t['lost']:.2f}")
-        self._net_v.setText(f"${t['net']:.2f}")
+        pairs = (
+            (self._wagers_v, str(t["wagers"])),
+            (self._bet_v, f"${t['bet']:.2f}"),
+            (self._won_v, f"${t['won']:.2f}"),
+            (self._lost_v, f"${t['lost']:.2f}"),
+            (self._net_v, f"${t['net']:.2f}"),
+        )
+        for lbl, text in pairs:
+            lbl.setText(text)
+            fm = QFontMetrics(lbl.font())
+            lbl.setFixedWidth(fm.horizontalAdvance(text) + 4)
 
 
 # ─────────────────────────────────────────────
