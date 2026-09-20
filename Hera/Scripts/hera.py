@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QLineEdit, QFrame, QSizePolicy, QDialog,
     QDialogButtonBox, QProgressBar, QSpacerItem
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect
 from PySide6.QtGui import QFont, QFontDatabase, QPixmap, QColor, QPalette, QPainter, QImage
 import re
 from datetime import datetime, timedelta
@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.2.2"
+VERSION = "4.3.0"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -39,6 +39,8 @@ LOGO_NOBG = os.path.join(DATA_DIR, "hera_nobg.png")
 DB_PATH = os.path.join(DATA_DIR, "hera.db")
 LOGO_DIR = os.path.join(HERA_DIR, "NFL LOGOS")
 COLOR_CSV = os.path.join(DATA_DIR, "Hera_Color_Hex_Codes_v3_00b8.csv")
+AUDIO_PATH = os.path.join(HERA_DIR, "HERA_AUDIO.mp3")
+CHARCOAL = "#262626"  # CSV APP BACKGROUND / EUTHENIA
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -637,28 +639,45 @@ def calc_parlay(odds_list, stake, boost_pct):
 # LOADING SCREEN
 # ─────────────────────────────────────────────
 class BootWorker(QThread):
-    progress = Signal(int, str)
+    progress = Signal(str)
     finished_ok = Signal(object, object)
     failed = Signal(str)
 
     def run(self):
         try:
-            self.progress.emit(8, "LOADING ASSETS")
-            load_team_colors()
-            self.progress.emit(22, "OPENING DATABASE")
+            self.progress.emit("OPENING DATABASE")
             init_db()
-            self.progress.emit(45, "FETCHING NFL SCHEDULE")
-            games, week_num = fetch_scoreboard()
-            self.progress.emit(78, "LOADING TEAM COLORS")
+            self.progress.emit("LOADING TEAM COLORS")
             load_team_colors()
-            self.progress.emit(100, "SYSTEM READY")
-            self.finished_ok.emit(games or [], week_num)
+            self.progress.emit("FETCHING NFL SCHEDULE")
+            games, week_num = fetch_scoreboard()
+            games = games or []
+            n_games = len(games)
+            self.progress.emit(f"FETCHING NFL SCHEDULE  {n_games} / {n_games} GAMES")
+
+            teams = {}
+            for g in games:
+                teams[str(g["away"]["id"])] = g
+                teams[str(g["home"]["id"])] = g
+            team_ids = list(teams.keys())
+            n_teams = max(1, len(team_ids))
+            player_count = 0
+            est_players = n_teams * 53
+            for i, tid in enumerate(team_ids, 1):
+                self.progress.emit(f"LOADING TEAMS  {i} / {n_teams}")
+                g = teams[tid]
+                roster = fetch_roster(g["id"], tid) or []
+                player_count += len(roster)
+                self.progress.emit(
+                    f"LOADING PLAYERS  {player_count} / {est_players}")
+            self.progress.emit("SYSTEM READY")
+            self.finished_ok.emit(games, week_num)
         except Exception:
             self.failed.emit(traceback.format_exc())
 
 
 def _colorize_statue(pm, hex_color):
-    """Shift hue to hex_color but keep marble highlights, folds, and alpha."""
+    """Shift to hex_color, keep marble folds (not a silhouette)."""
     if pm.isNull():
         return pm
     img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
@@ -671,32 +690,62 @@ def _colorize_statue(pm, hex_color):
             if a == 0:
                 continue
             lum = (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) / 255.0
-            lum = min(1.0, lum * 1.12)
+            lum = min(1.0, 0.28 + lum * 0.95)
             img.setPixel(x, y, QColor(int(tr * lum), int(tg * lum), int(tb * lum), a).rgba())
     return QPixmap.fromImage(img)
 
 
+def _statue_rim(pm, hex_color="#1cbe1c"):
+    """Light #1cbe1c outline around the full silhouette."""
+    if pm.isNull():
+        return QPixmap()
+    pad = 14
+    w, h = pm.width() + pad * 2, pm.height() + pad * 2
+    sil = QPixmap(pm.size())
+    sil.fill(Qt.transparent)
+    sp = QPainter(sil)
+    sp.drawPixmap(0, 0, pm)
+    sp.setCompositionMode(QPainter.CompositionMode_SourceIn)
+    sp.fillRect(sil.rect(), QColor(hex_color))
+    sp.end()
+    out = QPixmap(w, h)
+    out.fill(Qt.transparent)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setOpacity(0.42)
+    for dx, dy in ((-6, 0), (6, 0), (0, -6), (0, 6), (-5, -5), (5, -5), (-5, 5), (5, 5),
+                   (-7, 0), (7, 0), (0, -7), (0, 7)):
+        p.drawPixmap(pad + dx, pad + dy, sil)
+    p.setOpacity(1.0)
+    p.drawPixmap(pad, pad, pm)
+    p.end()
+    return out
+
+
 class LoadingScreen(QWidget):
-    """Statue + HERA in #1cbe1c. Bar fills over max(30s, data fetch)."""
+    """Matches the charcoal mockup. 30s hold. HERA_AUDIO.mp3 over the splash."""
     ready = Signal(object, object)
 
-    HERA_HEX = GREEN  # #1cbe1c
+    HERA_HEX = "#1cbe1c"
     MIN_HOLD = 30.0
 
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.setFixedSize(720, 980)
-        self.setStyleSheet("background:#0a0a0a;")
+        self.setFixedSize(720, 960)
+        self.setStyleSheet(f"background:{CHARCOAL};")
         self._pct = 0.0
         self._status = "STARTING"
         self._pending = None
         self._started_at = time.monotonic()
         self._data_done_at = None
+        self._player = None
+        self._audio_out = None
         self._statue = QPixmap()
         src = LOGO_NOBG if os.path.exists(LOGO_NOBG) else LOGO_ORIG
         if os.path.exists(src):
-            self._statue = _colorize_statue(QPixmap(src), self.HERA_HEX)
+            colored = _colorize_statue(QPixmap(src), self.HERA_HEX)
+            self._statue = _statue_rim(colored, self.HERA_HEX)
         self._worker = BootWorker()
         self._worker.progress.connect(self._on_boot_status)
         self._worker.finished_ok.connect(self._on_ready)
@@ -709,8 +758,45 @@ class LoadingScreen(QWidget):
         self._center()
         self.show()
         self._started_at = time.monotonic()
+        self._start_audio()
         self._clock.start()
         self._worker.start()
+
+    def _start_audio(self):
+        if not os.path.exists(AUDIO_PATH):
+            print("Missing audio:", AUDIO_PATH)
+            return
+        try:
+            from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+            self._audio_out = QAudioOutput(self)
+            self._audio_out.setVolume(1.0)
+            self._player = QMediaPlayer(self)
+            self._player.setAudioOutput(self._audio_out)
+            self._player.setSource(QUrl.fromLocalFile(os.path.abspath(AUDIO_PATH)))
+            self._player.play()
+            return
+        except Exception as e:
+            print("QtMultimedia audio failed:", e)
+        try:
+            import pygame
+            pygame.mixer.init()
+            pygame.mixer.music.load(AUDIO_PATH)
+            pygame.mixer.music.play()
+        except Exception as e:
+            print("pygame audio failed:", e)
+
+    def _stop_audio(self):
+        try:
+            if self._player:
+                self._player.stop()
+        except Exception:
+            pass
+        try:
+            import pygame
+            if pygame.mixer.get_init():
+                pygame.mixer.music.stop()
+        except Exception:
+            pass
 
     def _center(self):
         screen = QApplication.primaryScreen()
@@ -719,83 +805,100 @@ class LoadingScreen(QWidget):
             self.move(geo.center().x() - self.width() // 2,
                       geo.center().y() - self.height() // 2)
 
-    def _total_secs(self, elapsed):
-        if self._data_done_at is None:
-            return max(self.MIN_HOLD, elapsed + 1.0)
-        return max(self.MIN_HOLD, self._data_done_at - self._started_at)
-
     def _tick(self):
         elapsed = time.monotonic() - self._started_at
-        total = self._total_secs(elapsed)
+        total = self.MIN_HOLD
+        if self._data_done_at is not None:
+            total = max(self.MIN_HOLD, self._data_done_at - self._started_at)
+        self._pct = min(100.0, 100.0 * elapsed / total)
         if self._data_done_at is None:
-            self._pct = min(95.0, 100.0 * elapsed / self.MIN_HOLD)
-        else:
-            self._pct = min(100.0, 100.0 * elapsed / total)
-            if elapsed >= total:
-                self._pct = 100.0
-                self._clock.stop()
-                self._finish()
-                return
+            self._pct = min(95.0, self._pct)
+        elif elapsed >= total:
+            self._pct = 100.0
+            self._clock.stop()
+            self.update()
+            self._finish()
+            return
         self.update()
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
-        p.fillRect(self.rect(), QColor("#0a0a0a"))
-
-        if not self._statue.isNull():
-            pm = self._statue.scaled(320, 428, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            x = (self.width() - pm.width()) // 2
-            y = 64
-            p.drawPixmap(x, y, pm)
-            statue_bottom = y + pm.height()
-        else:
-            statue_bottom = 500
-
-        hera_top = statue_bottom + 56
-        status_top = hera_top + 108
-        bar_y = status_top + 36
+        p.fillRect(self.rect(), QColor(CHARCOAL))
+        w, h = self.width(), self.height()
+        hera_c = QColor(self.HERA_HEX)
         t = max(0.0, min(100.0, self._pct)) / 100.0
-        hera = QColor(self.HERA_HEX)
+
+        # Bottom stack — status / bar / % never overlap HERA
+        pct_font = QFont(_FF)
+        pct_font.setPixelSize(18)
+        status_font = QFont(_FF)
+        status_font.setPixelSize(22)
+        p.setFont(pct_font)
+        pct_h = p.fontMetrics().height()
+        p.setFont(status_font)
+        st_h = p.fontMetrics().height()
+        bottom, bar_h = 32, 4
+        pct_y = h - bottom - pct_h
+        bar_y = pct_y - 14 - bar_h
+        status_y = bar_y - 22 - st_h
+        hera_bottom = status_y - 40
 
         word = "HERA"
-        font = bb(56)
-        try:
-            font.setLetterSpacing(QFont.AbsoluteSpacing, 10)
-        except Exception:
-            pass
-        # Glow of the same hex, then solid word — reserved band so it cannot hit status
-        hera_box = self.rect().adjusted(24, hera_top, -24, -(self.height() - hera_top - 96))
-        for grow, alpha in ((16, int(40 * t + 10)), (8, int(70 * t + 15))):
-            c = QColor(hera)
+        hera_font = QFont(_FF)
+        hera_font.setPixelSize(168)
+        fm = None
+        for ps in range(168, 72, -2):
+            hera_font.setPixelSize(ps)
+            p.setFont(hera_font)
+            fm = p.fontMetrics()
+            br = fm.boundingRect(word)
+            if br.width() <= w - 96 and br.height() <= 220:
+                break
+        p.setFont(hera_font)
+        fm = p.fontMetrics()
+        br = fm.boundingRect(word)
+        hera_h = br.height()
+        hera_top = hera_bottom - hera_h
+        statue_gap = 20
+        statue_bottom = hera_top - statue_gap
+
+        if not self._statue.isNull() and statue_bottom > 24:
+            max_sh = statue_bottom - 12
+            pm = self._statue.scaled(w - 48, max_sh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            x = (w - pm.width()) // 2
+            y = max(8, statue_bottom - pm.height())
+            p.drawPixmap(x, y, pm)
+
+        hera_box = QRect(48, hera_top, w - 96, hera_h)
+        p.setFont(hera_font)
+        for grow, alpha in ((18, 90), (10, 150), (4, 210)):
+            c = QColor(hera_c)
             c.setAlpha(alpha)
             p.setPen(c)
-            p.setFont(font)
             p.drawText(hera_box.adjusted(-grow, -grow, grow, grow),
                        Qt.AlignHCenter | Qt.AlignVCenter, word)
-        p.setPen(hera)
-        p.setFont(font)
+        p.setPen(hera_c)
         p.drawText(hera_box, Qt.AlignHCenter | Qt.AlignVCenter, word)
 
-        p.setFont(bb(10))
-        p.setPen(QColor("#888888"))
-        p.drawText(self.rect().adjusted(24, status_top, -24, 0),
-                   Qt.AlignHCenter | Qt.AlignTop, self._status)
+        p.setFont(status_font)
+        p.setPen(QColor("#a8a8a8"))
+        p.drawText(QRect(24, status_y, w - 48, st_h + 4),
+                   Qt.AlignHCenter | Qt.AlignVCenter, self._status)
 
-        margin = 56
-        bar_w = self.width() - margin * 2
-        p.fillRect(margin, bar_y, bar_w, 2, QColor("#222222"))
-        fill = max(1, int(bar_w * t))
-        p.fillRect(margin, bar_y, fill, 2, hera)
+        margin = 48
+        bar_w = w - margin * 2
+        p.fillRect(margin, bar_y, bar_w, bar_h, QColor("#303030"))
+        p.fillRect(margin, bar_y, max(1, int(bar_w * t)), bar_h, hera_c)
 
-        p.setFont(bb(8))
-        p.setPen(QColor("#666666"))
-        p.drawText(self.rect().adjusted(0, bar_y + 16, 0, 0),
+        p.setFont(pct_font)
+        p.setPen(QColor("#969696"))
+        p.drawText(QRect(0, pct_y, w, pct_h),
                    Qt.AlignHCenter | Qt.AlignTop, f"{int(self._pct)}%")
         p.end()
 
-    def _on_boot_status(self, _pct, msg):
+    def _on_boot_status(self, msg):
         self._status = msg
         self.update()
 
@@ -805,6 +908,7 @@ class LoadingScreen(QWidget):
         self._status = "SYSTEM READY"
 
     def _finish(self):
+        self._stop_audio()
         games, week_num = self._pending if self._pending is not None else ([], None)
         self.ready.emit(games, week_num)
         self.close()
@@ -3229,7 +3333,7 @@ def main():
         app = QApplication(sys.argv)
         app.setStyle("Fusion")
         pal = QPalette()
-        pal.setColor(QPalette.Window, QColor("#1a1a1a"))
+        pal.setColor(QPalette.Window, QColor(CHARCOAL))
         pal.setColor(QPalette.WindowText, QColor(TEXT))
         pal.setColor(QPalette.Base, QColor(CARD))
         pal.setColor(QPalette.AlternateBase, QColor(HDR_BG))
