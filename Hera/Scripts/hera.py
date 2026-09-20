@@ -19,7 +19,8 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QStackedWidget,
     QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
     QGridLayout, QLineEdit, QFrame, QSizePolicy, QDialog,
-    QDialogButtonBox, QProgressBar, QSpacerItem, QStyledItemDelegate
+    QDialogButtonBox, QProgressBar, QSpacerItem, QStyledItemDelegate,
+    QStyle, QStyleOptionComboBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent
 from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QPixmap, QColor, QPalette, QPainter, QImage
@@ -29,7 +30,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.13"
+VERSION = "4.3.14"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -50,28 +51,60 @@ ROSTER_CACHE = {}  # team_id -> [{name, jersey, position, active}]
 
 
 def load_team_colors():
-    """Load background/font hex from the Hera color CSV (full team names)."""
+    """Load background/font hex from the Hera color CSV (full names + abbreviations)."""
     TEAM_COLORS.clear()
     if not os.path.exists(COLOR_CSV):
         return
     try:
+        section = "full"
         with open(COLOR_CSV, encoding="utf-8-sig") as f:
             for line in f:
                 parts = [p.strip() for p in line.strip().split(",")]
                 if not parts or not parts[0]:
                     continue
                 head = parts[0].upper()
-                if head.startswith("TEAM ABBREVIATION") or head.startswith("OFFENSE"):
-                    break
                 if head.startswith("FULL TEAM"):
+                    section = "full"
                     continue
+                if head.startswith("TEAM ABBREVIATION"):
+                    section = "abbr"
+                    continue
+                if head.startswith("OFFENSE") or head.startswith("DEFENSE"):
+                    break
                 if len(parts) < 3:
                     continue
                 bg, fg = parts[1], parts[2]
-                if bg.startswith("#") and fg.startswith("#"):
-                    TEAM_COLORS[parts[0].lower()] = (bg, fg)
+                if not (bg.startswith("#") and fg.startswith("#")):
+                    continue
+                raw = parts[0]
+                TEAM_COLORS[raw.lower()] = (bg, fg)
+                TEAM_COLORS[raw.upper()] = (bg, fg)
     except Exception:
         pass
+
+
+def colors_for_team(team):
+    """CSV pair (bg, fg) for a full name or abbreviation, or None."""
+    if not team:
+        return None
+    t = str(team).strip()
+    if t in ("", "N/A", "—", "-"):
+        return None
+    return TEAM_COLORS.get(t) or TEAM_COLORS.get(t.upper()) or TEAM_COLORS.get(t.lower())
+
+
+def paint_leg_row(tbl, row_idx, ncols, team):
+    """Paint every cell in a leg row with that team's CSV background and font."""
+    pair = colors_for_team(team)
+    if not pair:
+        return
+    bg, fg = QColor(pair[0]), QColor(pair[1])
+    for c in range(ncols):
+        it = tbl.item(row_idx, c)
+        if it is None:
+            continue
+        it.setBackground(bg)
+        it.setForeground(fg)
 
 # ─────────────────────────────────────────────
 # COLORS
@@ -203,9 +236,6 @@ def combo_ss(center=False):
           f"QComboBox::drop-down{{border:none;width:14px;}}"
           f"QComboBox QAbstractItemView{{background:#2a2a2a;color:#ffffff;"
           f"border:1px solid {BORDER};selection-background-color:{GREEN_DIM};}}")
-    if center:
-        ss += ("QComboBox QLineEdit{background:transparent;color:#ffffff;border:none;"
-               "padding:0px;qproperty-alignment:AlignCenter;}")
     return ss
 
 
@@ -1660,11 +1690,17 @@ class ActiveBetsPanel(QWidget):
                 str(line) if line else "—", str(live_val), str(needs), status_text
             ]
 
+            pair = colors_for_team(team)
             for ci, val in enumerate(vals):
                 it = QTableWidgetItem(str(val))
                 it.setFont(bb(11))
-                it.setForeground(QColor(row_color))
                 it.setTextAlignment(Qt.AlignCenter)
+                if pair:
+                    it.setBackground(QColor(pair[0]))
+                    it.setForeground(QColor(pair[1]))
+                else:
+                    it.setForeground(QColor(
+                        GREEN if is_won else RED if is_lost else TEXT))
                 self._tbl.setItem(r, ci, it)
 
             self._tbl.setRowHeight(r, 28)
@@ -2644,26 +2680,32 @@ class _CenterAlignDelegate(QStyledItemDelegate):
 
 
 class _CenterCombo(QComboBox):
-    """Closed text and popup rows are centered. Click still opens the list."""
+    """Non-editable combo: paints current text centered, never ellides it."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setEditable(True)
+        self.setEditable(False)
         self.setInsertPolicy(QComboBox.NoInsert)
-        self.setCompleter(None)
         self.setItemDelegate(_CenterAlignDelegate(self))
-        le = self.lineEdit()
-        le.setReadOnly(True)
-        le.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-        le.setFocusPolicy(Qt.NoFocus)
-        le.installEventFilter(self)
         self.view().setTextElideMode(Qt.ElideNone)
+        self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
 
-    def eventFilter(self, obj, ev):
-        if obj is self.lineEdit() and ev.type() == QEvent.MouseButtonPress:
-            self.showPopup()
-            return True
-        return super().eventFilter(obj, ev)
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        text = opt.currentText
+        opt.currentText = ""
+        opt.elideMode = Qt.ElideNone
+        self.style().drawComplexControl(QStyle.CC_ComboBox, opt, painter, self)
+        rect = self.style().subControlRect(
+            QStyle.CC_ComboBox, opt, QStyle.SC_ComboBoxEditField, self)
+        painter.setPen(QColor("#ffffff"))
+        painter.setFont(self.font())
+        painter.drawText(rect, Qt.AlignCenter | Qt.TextSingleLine, text)
+
+    def currentText(self):
+        return super().currentText()
 
 
 class BetEntryTab(QWidget):
@@ -2701,9 +2743,9 @@ class BetEntryTab(QWidget):
             "LEGS", "PARLAY ODDS", "BOOSTED ODDS", "TO WIN", "PAYOUT",
         ]
         lab_w = max(fm.horizontalAdvance(t) for t in labels) + 8
-        pid_w = fm.horizontalAdvance("P10") + 22
-        book_w = fm.horizontalAdvance("POLYMARKET") + 22
-        stake_w = fm.horizontalAdvance("000.00") + 16
+        pid_w = fm.horizontalAdvance("P10") + 36
+        book_w = fm.horizontalAdvance("POLYMARKET") + 36
+        stake_w = fm.horizontalAdvance("000.00") + 20
         pid_block_w = lab_w + 8 + pid_w
 
         head = QWidget()
@@ -2898,10 +2940,39 @@ class BetEntryTab(QWidget):
         if not hasattr(self, "_lt"):
             return
         hdr = self._lt.horizontalHeader()
-        for i in range(7):
-            hdr.setSectionResizeMode(i, QHeaderView.Stretch)
+        fm = QFontMetrics(bb(10))
+        pad = 40
+        mins = [
+            fm.horizontalAdvance("WWW @ WWW") + pad,
+            fm.horizontalAdvance("WWW") + pad,
+            fm.horizontalAdvance("WWWWWWWWWWWW") + pad,
+            fm.horizontalAdvance("UNDER") + pad,
+            fm.horizontalAdvance("249.5") + pad,
+            max(fm.horizontalAdvance(m) for m in MARKETS) + pad,
+            fm.horizontalAdvance("-1100") + pad,
+        ]
+        for row in self._rows:
+            for key, idx in (("gc", 0), ("tc", 1), ("pc", 2), ("oc", 3), ("mc", 5)):
+                c = row.get(key)
+                if c is None:
+                    continue
+                for i in range(c.count()):
+                    mins[idx] = max(mins[idx], fm.horizontalAdvance(c.itemText(i)) + pad)
+            for key, idx in (("li", 4), ("oi", 6)):
+                w = row.get(key)
+                if w is not None:
+                    mins[idx] = max(mins[idx], fm.horizontalAdvance(w.text() or "000.0") + pad)
+        avail = max(0, self._lt.viewport().width() - 40)
+        total = sum(mins)
+        hdr.setMinimumSectionSize(40)
+        hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(7, QHeaderView.Fixed)
         self._lt.setColumnWidth(7, 40)
+        extra = max(0, avail - total)
+        for i, m in enumerate(mins):
+            hdr.setSectionResizeMode(i, QHeaderView.Interactive)
+            w = m + (extra * m // total if total else 0)
+            self._lt.setColumnWidth(i, w)
 
     def _sync_table_height(self):
         hh = self._lt.horizontalHeader().height() or 26
@@ -3033,6 +3104,7 @@ class BetEntryTab(QWidget):
             self._set_combo(pc, saved_player)
         pc.blockSignals(False)
         self._fit_popup(pc)
+        self._layout_legs_table()
 
     def _sync_team_from_player(self, row, idx):
         abbr = row["pc"].itemData(idx)
@@ -3498,19 +3570,24 @@ class ActiveLegsTab(QWidget):
             for col, val in enumerate(vals):
                 it = QTableWidgetItem(str(val))
                 it.setFont(bb(11))
-                it.setBackground(QColor(rbg))
                 it.setTextAlignment(Qt.AlignCenter)
-                if col == 0 and is_tracking:
-                    it.setForeground(QColor(GREEN))
-                elif col == 9:
-                    it.setForeground(QColor(
-                        GOLD if is_won else
-                        RED if is_lost else
-                        GREEN if is_tracking else TEXT_DIM))
-                elif col in (6, 7, 8) and is_tracking:
-                    it.setForeground(QColor(GREEN))
+                pair = colors_for_team(team)
+                if pair:
+                    it.setBackground(QColor(pair[0]))
+                    it.setForeground(QColor(pair[1]))
                 else:
-                    it.setForeground(QColor(TEXT))
+                    it.setBackground(QColor(rbg))
+                    if col == 0 and is_tracking:
+                        it.setForeground(QColor(GREEN))
+                    elif col == 9:
+                        it.setForeground(QColor(
+                            GOLD if is_won else
+                            RED if is_lost else
+                            GREEN if is_tracking else TEXT_DIM))
+                    elif col in (6, 7, 8) and is_tracking:
+                        it.setForeground(QColor(GREEN))
+                    else:
+                        it.setForeground(QColor(TEXT))
                 tbl.setItem(r, col, it)
             tbl.setRowHeight(r, 26)
 
