@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.22"
+VERSION = "4.3.23"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -108,7 +108,7 @@ def tracking_table_ss():
 
 
 class _TeamRowDelegate(QStyledItemDelegate):
-    """Paints a full row from the TEAM cell. Used only on Active Legs and Game Tracker."""
+    """Paints a full row from the TEAM cell (Active Legs, Game Tracker, Archive)."""
 
     def __init__(self, team_col, parent=None):
         super().__init__(parent)
@@ -404,6 +404,16 @@ def init_db():
                 conn.execute("ALTER TABLE legs ADD COLUMN leg_status TEXT DEFAULT 'PENDING'")
             except Exception:
                 pass
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS archive_bankroll (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            wagers INTEGER NOT NULL DEFAULT 0,
+            bet REAL NOT NULL DEFAULT 0,
+            won REAL NOT NULL DEFAULT 0,
+            lost REAL NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("INSERT OR IGNORE INTO archive_bankroll(id) VALUES(1)")
     conn.commit()
     conn.close()
 
@@ -867,6 +877,99 @@ def settle_leg(ou, line, live_val, game_state, current_status):
     return current_status or "PENDING"
 
 
+def _parlay_result(legs, stake, boost):
+    """Return ('WON'|'LOST'|'PENDING', profit, stake_lost) for an archived parlay."""
+    stake = float(stake or 0)
+    statuses = []
+    odds = []
+    for leg in legs:
+        if len(leg) > 9 and leg[9]:
+            odds.append(leg[9])
+        st = (leg[11] if len(leg) > 11 else "") or "PENDING"
+        statuses.append(str(st).upper())
+    calc = calc_parlay(odds, stake, boost or 0)
+    if statuses and all(s == "WON" for s in statuses):
+        return "WON", round(float(calc["payout"]) - stake, 2), 0.0
+    if any(s == "LOST" for s in statuses):
+        return "LOST", 0.0, stake
+    return "PENDING", 0.0, 0.0
+
+
+def raw_archive_totals():
+    conn = db()
+    c = conn.cursor()
+    c.execute("SELECT * FROM parlays WHERE status='ARCHIVED'")
+    parlays = c.fetchall()
+    wagers = 0
+    bet = won = lost = 0.0
+    for par in parlays:
+        if not par or len(par) < 7:
+            continue
+        pid, _label, _book, stake, boost = par[0], par[1], par[2], par[3], par[4]
+        c.execute("SELECT * FROM legs WHERE parlay_id=?", (pid,))
+        legs = c.fetchall()
+        wagers += 1
+        bet += float(stake or 0)
+        _res, profit, stake_lost = _parlay_result(legs, stake, boost)
+        won += profit
+        lost += stake_lost
+    conn.close()
+    return {
+        "wagers": wagers,
+        "bet": round(bet, 2),
+        "won": round(won, 2),
+        "lost": round(lost, 2),
+    }
+
+
+def archive_bankroll_baseline():
+    conn = db()
+    c = conn.cursor()
+    c.execute("SELECT wagers, bet, won, lost FROM archive_bankroll WHERE id=1")
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return {"wagers": 0, "bet": 0.0, "won": 0.0, "lost": 0.0}
+    return {"wagers": int(row[0] or 0), "bet": float(row[1] or 0),
+            "won": float(row[2] or 0), "lost": float(row[3] or 0)}
+
+
+def save_archive_bankroll_baseline(tot):
+    conn = db()
+    conn.execute(
+        "UPDATE archive_bankroll SET wagers=?, bet=?, won=?, lost=? WHERE id=1",
+        (int(tot.get("wagers", 0)), float(tot.get("bet", 0)),
+         float(tot.get("won", 0)), float(tot.get("lost", 0))))
+    conn.commit()
+    conn.close()
+
+
+def display_archive_bankroll():
+    raw = raw_archive_totals()
+    base = archive_bankroll_baseline()
+    wagers = max(0, raw["wagers"] - base["wagers"])
+    bet = max(0.0, round(raw["bet"] - base["bet"], 2))
+    won = max(0.0, round(raw["won"] - base["won"], 2))
+    lost = max(0.0, round(raw["lost"] - base["lost"], 2))
+    return {
+        "wagers": wagers,
+        "bet": bet,
+        "won": won,
+        "lost": lost,
+        "net": round(won - lost, 2),
+    }
+
+
+def empty_archive():
+    conn = db()
+    conn.execute(
+        "DELETE FROM legs WHERE parlay_id IN (SELECT id FROM parlays WHERE status='ARCHIVED')")
+    conn.execute("DELETE FROM parlays WHERE status='ARCHIVED'")
+    conn.commit()
+    conn.close()
+    save_archive_bankroll_baseline({"wagers": 0, "bet": 0.0, "won": 0.0, "lost": 0.0})
+
+
 def persist_leg_live(leg_id, live_val, status):
     try:
         conn = db()
@@ -1269,6 +1372,8 @@ class BadgeLabel(QLabel):
 # ─────────────────────────────────────────────
 class NavBar(QWidget):
     tab_changed = Signal(int)
+    reset_bankroll = Signal()
+    empty_archive = Signal()
 
     def __init__(self):
         super().__init__()
@@ -1286,6 +1391,77 @@ class NavBar(QWidget):
         name.setFont(bb(22))
         name.setStyleSheet(f"color:{GREEN}; background:transparent; border:none; letter-spacing:4px;")
         lay.addWidget(name)
+
+        self._bank = QWidget()
+        self._bank.setStyleSheet("background:transparent; border:none;")
+        self._bank.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        bl = QHBoxLayout(self._bank)
+        bl.setContentsMargins(18, 0, 10, 0)
+        bl.setSpacing(0)
+
+        STAT_F = bb(13)
+        WHITE = "#ffffff"
+        BET_BLUE = "#3d9eff"
+        LOST_C = "#e06666"
+        NET_Y = "#ffdc28"
+
+        def stat_pair(key, color):
+            box = QWidget()
+            box.setStyleSheet("background:transparent; border:none;")
+            hl = QHBoxLayout(box)
+            hl.setContentsMargins(0, 0, 0, 0)
+            hl.setSpacing(4)
+            k = QLabel(key)
+            k.setFont(STAT_F)
+            k.setStyleSheet(f"color:{WHITE}; background:transparent; letter-spacing:1px;")
+            v = QLabel("0")
+            v.setFont(STAT_F)
+            v.setStyleSheet(f"color:{color}; background:transparent; letter-spacing:1px;")
+            hl.addWidget(k)
+            hl.addWidget(v)
+            return box, v
+
+        def pipe():
+            sep = QFrame()
+            sep.setFrameShape(QFrame.VLine)
+            sep.setFixedWidth(1)
+            sep.setFixedHeight(18)
+            sep.setStyleSheet(f"background:{BORDER}; border:none;")
+            return sep
+
+        self._wagers_box, self._wagers_v = stat_pair("WAGERS:", WHITE)
+        self._bet_box, self._bet_v = stat_pair("BET:", BET_BLUE)
+        self._won_box, self._won_v = stat_pair("WON:", GREEN)
+        self._lost_box, self._lost_v = stat_pair("LOST:", LOST_C)
+        self._net_box, self._net_v = stat_pair("NET GAIN:", NET_Y)
+
+        for i, wdg in enumerate(
+                [self._wagers_box, self._bet_box, self._won_box, self._lost_box, self._net_box]):
+            if i:
+                bl.addWidget(pipe())
+                bl.addSpacing(8)
+            bl.addWidget(wdg)
+            bl.addSpacing(8)
+
+        bl.addSpacing(6)
+        self._reset_btn = QPushButton("RESET")
+        self._reset_btn.setFont(STAT_F)
+        self._reset_btn.setCursor(Qt.PointingHandCursor)
+        self._reset_btn.setFixedHeight(24)
+        self._reset_btn.setStyleSheet(btn_ss(GREEN, "#000"))
+        self._reset_btn.clicked.connect(self.reset_bankroll.emit)
+        self._empty_btn = QPushButton("EMPTY")
+        self._empty_btn.setFont(STAT_F)
+        self._empty_btn.setCursor(Qt.PointingHandCursor)
+        self._empty_btn.setFixedHeight(24)
+        self._empty_btn.setStyleSheet(btn_ss("#cc0000", "#ffffff"))
+        self._empty_btn.clicked.connect(self.empty_archive.emit)
+        bl.addWidget(self._reset_btn)
+        bl.addSpacing(8)
+        bl.addWidget(self._empty_btn)
+
+        self._bank.setVisible(False)
+        lay.addWidget(self._bank)
         lay.addStretch()
 
         for i, t in enumerate(["GAME TRACKER", "PLAY BY PLAY", "BET ENTRY", "ACTIVE LEGS", "ARCHIVE"]):
@@ -1303,7 +1479,18 @@ class NavBar(QWidget):
     def _select(self, idx):
         for i, btn in enumerate(self._btns):
             btn.setStyleSheet(nav_active_ss() if i == idx else nav_inactive_ss())
+        self._bank.setVisible(idx == 4)
+        if idx == 4:
+            self.refresh_bankroll()
         self.tab_changed.emit(idx)
+
+    def refresh_bankroll(self):
+        t = display_archive_bankroll()
+        self._wagers_v.setText(str(t["wagers"]))
+        self._bet_v.setText(f"${t['bet']:.2f}")
+        self._won_v.setText(f"${t['won']:.2f}")
+        self._lost_v.setText(f"${t['lost']:.2f}")
+        self._net_v.setText(f"${t['net']:.2f}")
 
 
 # ─────────────────────────────────────────────
@@ -4104,7 +4291,8 @@ class ArchiveTab(QWidget):
         tbl.verticalHeader().setVisible(False)
         tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         tbl.setSelectionMode(QTableWidget.NoSelection)
-        tbl.setStyleSheet(table_ss())
+        tbl.setStyleSheet(tracking_table_ss())
+        tbl.setItemDelegate(_TeamRowDelegate(1, tbl))
         tbl.setShowGrid(False)
         tbl.setFrameShape(QFrame.NoFrame)
         tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -4137,7 +4325,6 @@ class ArchiveTab(QWidget):
                 for ci, val in enumerate(vals):
                     it = QTableWidgetItem(str(val or "—"))
                     it.setFont(bb(11))
-                    it.setForeground(QColor(TEXT))
                     it.setTextAlignment(Qt.AlignCenter)
                     tbl.setItem(r, ci, it)
                 tbl.setRowHeight(r, 26)
@@ -4164,6 +4351,8 @@ class HeraWindow(QMainWindow):
 
         self._nav = NavBar()
         self._nav.tab_changed.connect(self._switch)
+        self._nav.reset_bankroll.connect(self._reset_bankroll)
+        self._nav.empty_archive.connect(self._empty_archive)
         ml.addWidget(self._nav)
 
         self._stack = QStackedWidget()
@@ -4213,6 +4402,16 @@ class HeraWindow(QMainWindow):
             self._al.refresh()
         elif idx == 4:
             self._ar.refresh()
+            self._nav.refresh_bankroll()
+
+    def _reset_bankroll(self):
+        save_archive_bankroll_baseline(raw_archive_totals())
+        self._nav.refresh_bankroll()
+
+    def _empty_archive(self):
+        empty_archive()
+        self._ar.refresh()
+        self._nav.refresh_bankroll()
 
 
 # ─────────────────────────────────────────────
