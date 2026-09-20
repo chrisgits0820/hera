@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.1.7"
+VERSION = "4.1.8"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -38,8 +38,36 @@ LOGO_ORIG = os.path.join(HERA_DIR, "hera_loading_screen.png")
 LOGO_NOBG = os.path.join(DATA_DIR, "hera_nobg.png")
 DB_PATH = os.path.join(DATA_DIR, "hera.db")
 LOGO_DIR = os.path.join(HERA_DIR, "NFL LOGOS")
+COLOR_CSV = os.path.join(DATA_DIR, "Hera_Color_Hex_Codes_v3_00b8.csv")
 
 os.makedirs(DATA_DIR, exist_ok=True)
+
+TEAM_COLORS = {}  # lowercase full name -> (bg_hex, fg_hex)
+
+
+def load_team_colors():
+    """Load background/font hex from the Hera color CSV (full team names)."""
+    TEAM_COLORS.clear()
+    if not os.path.exists(COLOR_CSV):
+        return
+    try:
+        with open(COLOR_CSV, encoding="utf-8-sig") as f:
+            for line in f:
+                parts = [p.strip() for p in line.strip().split(",")]
+                if not parts or not parts[0]:
+                    continue
+                head = parts[0].upper()
+                if head.startswith("TEAM ABBREVIATION") or head.startswith("OFFENSE"):
+                    break
+                if head.startswith("FULL TEAM"):
+                    continue
+                if len(parts) < 3:
+                    continue
+                bg, fg = parts[1], parts[2]
+                if bg.startswith("#") and fg.startswith("#"):
+                    TEAM_COLORS[parts[0].lower()] = (bg, fg)
+    except Exception:
+        pass
 
 # ─────────────────────────────────────────────
 # COLORS
@@ -102,11 +130,19 @@ MARKET_STAT_MAP = {
     "COMP": "completions",
     "PS ATT": "attempts",
     "INT": "interceptions",
+    "LNG PS": "longPassingYards",
     "REC YDS": "receivingYards",
     "REC": "receptions",
     "TAR": "receivingTargets",
+    "LNG REC": "longReception",
+    "RSH ATT": "rushingAttempts",
+    "RSH YDS": "rushingYards",
     "SCK": "sacks",
     "T+A": "totalTackles",
+    "INT REC": "interceptions",
+    "K PTS": "kickingPoints",
+    "FGM": "fieldGoalsMade",
+    "EPM": "extraPointsMade",
 }
 
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
@@ -258,10 +294,17 @@ def init_db():
     c = conn.cursor()
     c.execute("PRAGMA table_info(legs)")
     cols = [row[1] for row in c.fetchall()]
-    if "leg_status" not in cols and "status" in cols:
-        conn.execute("ALTER TABLE legs RENAME COLUMN status TO leg_status")
-    elif "leg_status" not in cols:
-        conn.execute("ALTER TABLE legs ADD COLUMN leg_status TEXT DEFAULT 'PENDING'")
+    try:
+        if "leg_status" not in cols and "status" in cols:
+            conn.execute("ALTER TABLE legs RENAME COLUMN status TO leg_status")
+        elif "leg_status" not in cols:
+            conn.execute("ALTER TABLE legs ADD COLUMN leg_status TEXT DEFAULT 'PENDING'")
+    except Exception:
+        if "leg_status" not in cols:
+            try:
+                conn.execute("ALTER TABLE legs ADD COLUMN leg_status TEXT DEFAULT 'PENDING'")
+            except Exception:
+                pass
     conn.commit()
     conn.close()
 
@@ -307,18 +350,26 @@ def fetch_scoreboard(week=None, seasontype=2):
 
         def ti(t):
             tm = t.get("team", {})
+            name = tm.get("displayName", "")
+            color = "#" + str(tm.get("color", "333333")).lstrip("#")
+            alt = "#" + str(tm.get("alternateColor", "ffffff")).lstrip("#")
+            csv_pair = TEAM_COLORS.get(name.lower())
+            if csv_pair:
+                color, alt = csv_pair
+            recs = t.get("records") or []
+            rec = recs[0].get("summary", "") if recs and isinstance(recs[0], dict) else ""
             return {
-                "id": tm.get("id", ""),
-                "name": tm.get("displayName", ""),
+                "id": str(tm.get("id", "")),
+                "name": name,
                 "abbr": tm.get("abbreviation", ""),
-                "color": "#" + tm.get("color", "333333"),
-                "alt": "#" + tm.get("alternateColor", "ffffff"),
+                "color": color,
+                "alt": alt,
                 "score": t.get("score", "0"),
-                "record": t.get("records", [{}])[0].get("summary", "") if t.get("records") else "",
+                "record": rec,
             }
 
         games.append({
-            "id": event.get("id", ""),
+            "id": str(event.get("id", "")),
             "short": event.get("shortName", ""),
             "state": status.get("type", {}).get("state", "pre"),
             "detail": status.get("type", {}).get("shortDetail", ""),
@@ -423,25 +474,81 @@ def _parse_roster_entries(entries):
     return [p for p in players if p["name"]]
 
 
+def _name_match(player_name, athlete_name):
+    if not player_name or not athlete_name:
+        return False
+    a = player_name.lower().strip()
+    b = athlete_name.lower().strip()
+    if a in b or b in a:
+        return True
+    a_parts = a.split()
+    b_parts = b.split()
+    return bool(a_parts and b_parts and a_parts[-1] == b_parts[-1] and len(a_parts[-1]) > 2)
+
+
 def get_live_stat(summary, player_name, market, team_id):
-    if not summary or market not in MARKET_STAT_MAP:
+    if not summary or not player_name or market not in MARKET_STAT_MAP:
         return "—"
     stat_key = MARKET_STAT_MAP[market]
-    for block in summary.get("boxscore", {}).get("players", []):
-        if str(block.get("team", {}).get("id", "")) != str(team_id):
-            continue
-        for group in block.get("statistics", []):
-            keys = group.get("keys", [])
-            if stat_key not in keys:
+    blocks = (summary.get("boxscore") or {}).get("players") or []
+
+    def scan(require_team):
+        for block in blocks:
+            bid = str((block.get("team") or {}).get("id", ""))
+            if require_team and team_id and bid != str(team_id):
                 continue
-            idx = keys.index(stat_key)
-            for ath in group.get("athletes", []):
-                name = ath.get("athlete", {}).get("displayName", "")
-                if player_name.lower() in name.lower():
-                    stats = ath.get("stats", [])
-                    if idx < len(stats):
-                        return stats[idx]
-    return "—"
+            for group in block.get("statistics") or []:
+                keys = group.get("keys") or []
+                if stat_key not in keys:
+                    continue
+                idx = keys.index(stat_key)
+                for ath in group.get("athletes") or []:
+                    name = (ath.get("athlete") or {}).get("displayName", "")
+                    if _name_match(player_name, name):
+                        stats = ath.get("stats") or []
+                        if idx < len(stats) and stats[idx] not in (None, ""):
+                            return str(stats[idx])
+        return None
+
+    hit = scan(True)
+    if hit is None:
+        hit = scan(False)
+    return hit if hit is not None else "—"
+
+
+def settle_leg(ou, line, live_val, game_state, current_status):
+    """Return WON / LOST / existing status from live stat vs line."""
+    if current_status in ("WON", "LOST"):
+        return current_status
+    try:
+        cur = float(str(live_val).replace(",", ""))
+        tgt = float(str(line).replace(",", ""))
+    except Exception:
+        return current_status or "PENDING"
+    ou_u = (ou or "").upper()
+    if ou_u == "OVER":
+        if cur > tgt:
+            return "WON"
+        if game_state == "post":
+            return "LOST"
+    elif ou_u == "UNDER":
+        if cur > tgt:
+            return "LOST"
+        if game_state == "post" and cur < tgt:
+            return "WON"
+    return current_status or "PENDING"
+
+
+def persist_leg_live(leg_id, live_val, status):
+    try:
+        conn = db()
+        conn.execute(
+            "UPDATE legs SET live_stat=?, leg_status=? WHERE id=?",
+            (str(live_val), status, leg_id))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def get_stat_group(summary, team_id, stat_name):
@@ -527,8 +634,128 @@ def calc_parlay(odds_list, stake, boost_pct):
 
 
 # ─────────────────────────────────────────────
-# LOADING WORKER
+# LOADING SCREEN
 # ─────────────────────────────────────────────
+class BootWorker(QThread):
+    progress = Signal(int, str)
+    finished_ok = Signal(object, object)
+    failed = Signal(str)
+
+    def run(self):
+        try:
+            self.progress.emit(8, "LOADING ASSETS")
+            load_team_colors()
+            self.progress.emit(22, "OPENING DATABASE")
+            init_db()
+            self.progress.emit(45, "FETCHING NFL SCHEDULE")
+            games, week_num = fetch_scoreboard()
+            self.progress.emit(78, "LOADING TEAM COLORS")
+            load_team_colors()
+            self.progress.emit(100, "SYSTEM READY")
+            self.finished_ok.emit(games or [], week_num)
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+
+
+class LoadingScreen(QWidget):
+    """Frameless splash: statue, glowing HERA word, status, progress bar."""
+    ready = Signal(object, object)
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setFixedSize(520, 680)
+        self.setStyleSheet(f"background:#1a1a1a; color:{TEXT};")
+        self._pct = 0
+        self._build()
+        self._worker = BootWorker()
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished_ok.connect(self._on_ready)
+        self._worker.failed.connect(self._on_fail)
+
+    def start(self):
+        self._center()
+        self.show()
+        self._worker.start()
+
+    def _center(self):
+        screen = QApplication.primaryScreen()
+        if screen:
+            geo = screen.availableGeometry()
+            self.move(geo.center().x() - self.width() // 2,
+                      geo.center().y() - self.height() // 2)
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(36, 48, 36, 40)
+        lay.setSpacing(8)
+        lay.addStretch()
+
+        statue = QLabel()
+        statue.setAlignment(Qt.AlignCenter)
+        statue.setStyleSheet("background:transparent;")
+        src = LOGO_NOBG if os.path.exists(LOGO_NOBG) else LOGO_ORIG
+        if os.path.exists(src):
+            pm = QPixmap(src)
+            statue.setPixmap(pm.scaled(280, 360, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        lay.addWidget(statue, 0, Qt.AlignCenter)
+
+        self._word = QLabel("HERA")
+        self._word.setAlignment(Qt.AlignCenter)
+        self._word.setFont(bb(42))
+        self._set_glow(0)
+        lay.addWidget(self._word)
+
+        self._status = QLabel("STARTING")
+        self._status.setAlignment(Qt.AlignCenter)
+        self._status.setFont(bb(10))
+        self._status.setStyleSheet(
+            f"color:{TEXT_DIM}; letter-spacing:3px; background:transparent;")
+        lay.addWidget(self._status)
+
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 100)
+        self._bar.setValue(0)
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(4)
+        self._bar.setStyleSheet(
+            f"QProgressBar{{background:#222222;border:none;}}"
+            f"QProgressBar::chunk{{background:{GREEN};}}")
+        lay.addWidget(self._bar)
+
+        self._pct_lbl = QLabel("0%")
+        self._pct_lbl.setAlignment(Qt.AlignCenter)
+        self._pct_lbl.setFont(bb(9))
+        self._pct_lbl.setStyleSheet(f"color:{TEXT_DARK}; background:transparent;")
+        lay.addWidget(self._pct_lbl)
+        lay.addStretch()
+
+    def _set_glow(self, pct):
+        t = max(0, min(100, pct)) / 100.0
+        r = int(10 + (28 - 10) * t)
+        g = int(40 + (190 - 40) * t)
+        b = int(10 + (28 - 10) * t)
+        hex_c = f"#{r:02x}{g:02x}{b:02x}"
+        self._word.setStyleSheet(
+            f"color:{hex_c}; background:transparent; letter-spacing:10px;")
+
+    def _on_progress(self, pct, msg):
+        self._pct = pct
+        self._bar.setValue(pct)
+        self._pct_lbl.setText(f"{pct}%")
+        self._status.setText(msg)
+        self._set_glow(pct)
+
+    def _on_ready(self, games, week_num):
+        self.ready.emit(games, week_num)
+        self.close()
+
+    def _on_fail(self, err):
+        self._status.setText("STARTUP FAILED")
+        self._status.setStyleSheet(f"color:{RED}; letter-spacing:2px; background:transparent;")
+        print("FATAL ERROR:\n", err)
+
+
 class BadgeLabel(QLabel):
     """QLabel that paints its own colored background via QPainter,
     bypassing Qt's stylesheet cascade so the color always shows
@@ -815,7 +1042,11 @@ class ScoreHeader(QWidget):
 
         if summary:
             sit = summary.get("situation") or {}
-            self._sit_lbl.setText(sit.get("downDistanceText", ""))
+            if not isinstance(sit, dict):
+                sit = {}
+            self._sit_lbl.setText(sit.get("downDistanceText", "") or "")
+        else:
+            self._sit_lbl.setText("")
 
 
 # ─────────────────────────────────────────────
@@ -1019,12 +1250,16 @@ class WinProbBar(QWidget):
         away_pct = 50
         home_pct = 50
         if summary:
-            wp_list = summary.get("winprobability", [])
-            if wp_list:
+            wp_list = summary.get("winprobability") or []
+            if isinstance(wp_list, list) and wp_list:
                 last = wp_list[-1]
-                raw = last.get("homeWinPercentage", 0.5)
-                home_pct = int(round(float(raw) * 100))
-                away_pct = 100 - home_pct
+                if isinstance(last, dict):
+                    raw = last.get("homeWinPercentage", 0.5)
+                    try:
+                        home_pct = int(round(float(raw) * 100))
+                        away_pct = 100 - home_pct
+                    except Exception:
+                        pass
 
         self._away_pct.setText(f"{away_pct}%  {away['abbr']}")
         self._away_pct.setStyleSheet(f"color:{away['alt']}; background:transparent;")
@@ -1177,7 +1412,7 @@ class ActiveBetsPanel(QWidget):
                    l.team, l.player, l.market, l.ou,
                    l.line, l.odds, l.live_stat, l.leg_status
             FROM legs l JOIN parlays p ON l.parlay_id = p.id
-            WHERE l.game_id = ?
+            WHERE CAST(l.game_id AS TEXT) = CAST(? AS TEXT)
               AND p.status IN ('LIVE','PENDING')
             ORDER BY l.id
         """, (self._game_id,))
@@ -1202,20 +1437,32 @@ class ActiveBetsPanel(QWidget):
             # Pull live stat value
             live_val = live_stat or "—"
             if summary and player and game:
-                tid = game["away"]["id"] if team == game.get("away", {}).get("abbr") else game["home"]["id"]
+                away = game.get("away") or {}
+                home = game.get("home") or {}
+                if team == away.get("abbr"):
+                    tid = away.get("id")
+                elif team == home.get("abbr"):
+                    tid = home.get("id")
+                else:
+                    tid = ""
                 v = get_live_stat(summary, player, market, tid)
                 if v != "—":
                     live_val = v
+            state = (game or {}).get("state", "")
+            new_status = settle_leg(ou, line, live_val, state, leg_status)
+            if live_val != (live_stat or "—") or new_status != leg_status:
+                persist_leg_live(lid, live_val, new_status)
+                leg_status = new_status
 
             # Calculate "NEEDS" (remaining to hit the line)
             needs = "—"
             try:
                 cur = float(str(live_val).replace(",", ""))
                 tgt = float(str(line).replace(",", ""))
-                if ou == "OVER":
-                    needs = str(max(0, round(tgt - cur, 1)))
-                elif ou == "UNDER":
-                    needs = str(max(0, round(cur - tgt, 1)))
+                if (ou or "").upper() == "OVER":
+                    needs = str(max(0, round(tgt - cur + 0.5, 1)))
+                elif (ou or "").upper() == "UNDER":
+                    needs = str(max(0, round(tgt - cur, 1))) if cur <= tgt else "0"
             except Exception:
                 pass
 
@@ -1912,34 +2159,31 @@ class GameTrackerTab(QWidget):
 
     def _load(self, game):
         self._current = game
+        try:
+            summary = fetch_summary(game["id"])
+            self._summary = summary
 
-        # Fetch all external data
-        summary = fetch_summary(game["id"])
-        self._summary = summary
+            away_ls = fetch_linescores(game["id"], game["away"]["id"])
+            home_ls = fetch_linescores(game["id"], game["home"]["id"])
 
-        away_ls = fetch_linescores(game["id"], game["away"]["id"])
-        home_ls = fetch_linescores(game["id"], game["home"]["id"])
+            self._score_hdr.refresh(game, summary)
+            self._boxscore.refresh(game, away_ls, home_ls)
+            self._winprob.refresh(game, summary)
 
-        # Score header + boxscore + win prob
-        self._score_hdr.refresh(game, summary)
-        self._boxscore.refresh(game, away_ls, home_ls)
-        self._winprob.refresh(game, summary)
+            self._legs_panel.set_game(str(game["id"]), self._games)
+            self._legs_panel.refresh(game, summary)
 
-        # Active bets for this game
-        self._legs_panel.set_game(game["id"], self._games)
-        self._legs_panel.refresh(game, summary)
+            bet_players = self._get_bet_players(game["id"])
+            self._load_stat_boxes(game, summary)
 
-        # Pull tracked player names for PBP highlighting
-        bet_players = self._get_bet_players(game["id"])
-
-        # Stat boxes — pull groups from ESPN summary
-        self._load_stat_boxes(game, summary)
-
-        # Play by play
-        plays = fetch_plays(game["id"])
-        if plays:
-            self._last_seq = plays[0].get("seq", -1)
-        self.game_updated.emit(game, summary, plays or [], away_ls, home_ls, bet_players)
+            plays = fetch_plays(game["id"])
+            if plays:
+                self._last_seq = plays[0].get("seq", -1)
+            self.game_updated.emit(game, summary, plays or [], away_ls, home_ls, bet_players)
+            if not self._timer.isActive():
+                self._timer.start()
+        except Exception:
+            traceback.print_exc()
 
     def _load_stat_boxes(self, game, summary):
         """Fetch all 6 stat groups and populate the away/home StatBoxes."""
@@ -1991,9 +2235,9 @@ class GameTrackerTab(QWidget):
             c.execute("""
                 SELECT DISTINCT l.player FROM legs l
                 JOIN parlays p ON l.parlay_id = p.id
-                WHERE l.game_id = ?
+                WHERE CAST(l.game_id AS TEXT) = CAST(? AS TEXT)
                   AND p.status IN ('LIVE','PENDING')
-                  AND l.player IS NOT NULL AND l.player != ''
+                  AND l.player IS NOT NULL AND l.player != '' AND l.player != 'N/A'
             """, (game_id,))
             players = [row[0] for row in c.fetchall()]
             conn.close()
@@ -2002,19 +2246,19 @@ class GameTrackerTab(QWidget):
             return []
 
     def _poll(self):
-        """5-second poll: refresh plays and scores if a new play is detected."""
+        """5-second poll: always refresh scores, stats, and bets for the tracked game."""
         if not self._current:
             return
-        plays = fetch_plays(self._current["id"])
-        if plays and plays[0].get("seq", -1) != self._last_seq:
-            self._last_seq = plays[0].get("seq", -1)
+        try:
+            plays = fetch_plays(self._current["id"]) or []
+            if plays:
+                self._last_seq = plays[0].get("seq", self._last_seq)
             summary = fetch_summary(self._current["id"])
             self._summary = summary
 
-            # Refresh scoreboard for updated scores
             fresh, _ = fetch_scoreboard(week=self._week)
-            for g in fresh:
-                if g["id"] == self._current["id"]:
+            for g in (fresh or []):
+                if str(g["id"]) == str(self._current["id"]):
                     self._current = g
                     break
 
@@ -2029,6 +2273,8 @@ class GameTrackerTab(QWidget):
 
             bet_players = self._get_bet_players(self._current["id"])
             self.game_updated.emit(self._current, summary, plays, away_ls, home_ls, bet_players)
+        except Exception:
+            traceback.print_exc()
 
 
 # ─────────────────────────────────────────────
@@ -2420,7 +2666,7 @@ class BetEntryTab(QWidget):
         conn.execute(
             "INSERT INTO legs(parlay_id,game_id,game_display,team,player,"
             "market,ou,line,odds,leg_status) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (self._parlay_id, g.get("id", ""), gc.currentText(),
+            (self._parlay_id, str(g.get("id", "")), gc.currentText(),
              tc.currentText() if tc else "N/A",
              pc.currentText() if pc else "N/A",
              mc.currentText() if mc else "ML",
@@ -2437,9 +2683,7 @@ class BetEntryTab(QWidget):
     def _add_leg(self):
         """Add an inline editable row to the leg table."""
         if self._pending_row:
-            # Auto-save the existing pending row, then return (user clicks again to add another)
             self._save_pending()
-            return
         self._pending_row = True
         self._pending_widgets = {}
         self._el.setVisible(False)
@@ -2572,10 +2816,7 @@ class BetEntryTab(QWidget):
         conn.commit()
         conn.close()
         self.submitted.emit()
-        self._parlay_id = None
-        self._legs = []
-        self._refresh_tbl()
-        self._recalc()
+        self._load_parlay()
 
 
 # ─────────────────────────────────────────────
@@ -2633,7 +2874,9 @@ class ActiveLegsTab(QWidget):
             return
 
         for par in parlays:
-            pid, label, book, stake, boost, status, created = par
+            if not par or len(par) < 7:
+                continue
+            pid, label, book, stake, boost, status, created = par[:7]
             conn = db()
             c = conn.cursor()
             c.execute("SELECT * FROM legs WHERE parlay_id=?", (pid,))
@@ -2722,8 +2965,10 @@ class ActiveLegsTab(QWidget):
         tbl.setShowGrid(False)
 
         for r, leg in enumerate(legs):
-            lid, pid2, game_id, game_disp, team, player, market, ou, line, odds, live_stat, leg_status = leg
-            gi = next((g for g in self._games if g["id"] == game_id), None)
+            if len(leg) < 12:
+                continue
+            lid, pid2, game_id, game_disp, team, player, market, ou, line, odds, live_stat, leg_status = leg[:12]
+            gi = next((g for g in self._games if str(g["id"]) == str(game_id)), None)
             quarter = "—"
             score = "—"
             live_val = live_stat or "—"
@@ -2735,16 +2980,26 @@ class ActiveLegsTab(QWidget):
                     quarter = f"Q{p}"
                 score = f"{gi['away']['score']}-{gi['home']['score']}"
                 is_tracking = gi.get("state") == "in"
-                if game_id not in self._scache:
-                    s = fetch_summary(game_id)
+                gid = str(game_id)
+                if gid not in self._scache:
+                    s = fetch_summary(gid)
                     if s:
-                        self._scache[game_id] = s
-                s = self._scache.get(game_id)
-                if s and player and team:
-                    tid = gi["away"]["id"] if team == gi["away"]["abbr"] else gi["home"]["id"]
+                        self._scache[gid] = s
+                s = self._scache.get(gid)
+                if s and player and player != "N/A":
+                    if team == gi["away"]["abbr"]:
+                        tid = gi["away"]["id"]
+                    elif team == gi["home"]["abbr"]:
+                        tid = gi["home"]["id"]
+                    else:
+                        tid = ""
                     v = get_live_stat(s, player, market, tid)
                     if v != "—":
                         live_val = v
+                    new_status = settle_leg(ou, line, live_val, gi.get("state", ""), leg_status)
+                    if live_val != (live_stat or "—") or new_status != leg_status:
+                        persist_leg_live(lid, live_val, new_status)
+                        leg_status = new_status
 
             is_won = leg_status == "WON"
             is_lost = leg_status == "LOST"
@@ -2818,7 +3073,9 @@ class ArchiveTab(QWidget):
         conn.close()
         self._tbl.setRowCount(len(rows))
         for r, row in enumerate(rows):
-            pid, label, book, stake, boost, status, created = row
+            if not row or len(row) < 7:
+                continue
+            pid, label, book, stake, boost, status, created = row[:7]
             conn = db()
             c2 = conn.cursor()
             c2.execute("SELECT odds FROM legs WHERE parlay_id=?", (pid,))
@@ -2873,6 +3130,7 @@ class HeraWindow(QMainWindow):
         self._gt.game_updated.connect(self._pbp_tab.sync)
         self._be.submitted.connect(self._ar.refresh)
         self._be.submitted.connect(self._gt._legs_panel.refresh)
+        self._be.submitted.connect(self._al.refresh)
 
         for tab in [self._gt, self._pbp_tab, self._be, self._al, self._ar]:
             sc = QScrollArea()
@@ -2901,18 +3159,17 @@ class HeraWindow(QMainWindow):
 # ─────────────────────────────────────────────
 def main():
     print(f"HERA v{VERSION} starting...")
-    # Windows: set DPI awareness before creating QApplication
     if sys.platform == "win32":
         try:
             import ctypes
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor DPI
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
         except Exception:
             pass
     try:
         app = QApplication(sys.argv)
         app.setStyle("Fusion")
         pal = QPalette()
-        pal.setColor(QPalette.Window, QColor(BG))
+        pal.setColor(QPalette.Window, QColor("#1a1a1a"))
         pal.setColor(QPalette.WindowText, QColor(TEXT))
         pal.setColor(QPalette.Base, QColor(CARD))
         pal.setColor(QPalette.AlternateBase, QColor(HDR_BG))
@@ -2924,19 +3181,26 @@ def main():
         app.setPalette(pal)
         load_font()
         app.setFont(bb(12))
-        # Force Bebas Neue on every widget — stylesheet rules override setFont
         app.setStyleSheet(f"* {{ font-family: '{_FF}'; }}")
 
-        games, week_num = fetch_scoreboard()
-        win = HeraWindow(games, week_num)
-        win.show()
-        app._win = win
+        def open_main(games, week_num):
+            win = HeraWindow(games or [], week_num)
+            win.show()
+            app._win = win
+
+        splash = LoadingScreen()
+        splash.ready.connect(open_main)
+        splash.start()
+        app._splash = splash
         sys.exit(app.exec())
 
     except Exception:
         print("FATAL ERROR:")
         traceback.print_exc()
-        input("Press Enter to close...")
+        try:
+            input("Press Enter to close...")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
