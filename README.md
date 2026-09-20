@@ -13,6 +13,10 @@ python Hera/Scripts/hera.py
 
 Run the same file in PyCharm if that is how you launch it. Audio is `Hera/HERA_AUDIO.mp3`.
 
+## Live tracking
+
+**TRACK** reloads the selected game and polls ESPN every 3 seconds (scoreboard, summary/boxscore, plays, both linescores in parallel). Game Tracker **CURRENT** is the live stat (0 before the boxscore exists). **NEEDS** is remaining to strictly exceed the line on OVER, or remaining cushion on UNDER, with clock/time remaining while the game is in progress.
+
 ## Bet Entry
 
 - Pick a slot **P1–P10**.
