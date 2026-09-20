@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.18"
+VERSION = "4.3.19"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2700,7 +2700,8 @@ class AddLegDialog(QDialog):
 # BET ENTRY TAB
 # ─────────────────────────────────────────────
 class _CenterCombo(QComboBox):
-    """Closed text centered. Popup is a fixed scrollable list inside the window."""
+    """Closed text centered. Popup is a fixed scrollable list inside the window.
+    Typing matches the full string (contains), not only the last letter."""
 
     _POP_W = 200
     _POP_H = 184
@@ -2716,6 +2717,81 @@ class _CenterCombo(QComboBox):
         v.setTextElideMode(Qt.ElideNone)
         v.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         v.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._full_items = None
+        self._typed = ""
+
+    def clear(self):
+        self._full_items = None
+        self._typed = ""
+        super().clear()
+
+    def _capture_items(self):
+        if self._full_items is not None:
+            return
+        rows = []
+        for i in range(self.count()):
+            rows.append((self.itemText(i), self.itemData(i)))
+        self._full_items = rows
+
+    def _reload(self, rows, keep=None, silent=True):
+        self.blockSignals(True)
+        super().clear()
+        for text, data in rows:
+            super().addItem(text, data)
+        self.blockSignals(False)
+        if keep:
+            i = self.findText(keep)
+            if i >= 0:
+                if silent:
+                    self.blockSignals(True)
+                self.setCurrentIndex(i)
+                if silent:
+                    self.blockSignals(False)
+        elif self.count():
+            if silent:
+                self.blockSignals(True)
+            self.setCurrentIndex(0)
+            if silent:
+                self.blockSignals(False)
+
+    def _apply_filter(self):
+        self._capture_items()
+        q = self._typed.lower()
+        keep = self.currentText()
+        if not q:
+            self._reload(self._full_items, keep=keep)
+            return
+        matched = [(t, d) for t, d in self._full_items if t and q in t.lower()]
+        self._reload(matched, keep=keep)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down,
+                   Qt.Key_Tab, Qt.Key_Backtab, Qt.Key_Return, Qt.Key_Enter,
+                   Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown):
+            super().keyPressEvent(event)
+            return
+        if key == Qt.Key_Escape:
+            self._typed = ""
+            if self._full_items:
+                self._reload(self._full_items, keep=self.currentText())
+            self.hidePopup()
+            return
+        if key == Qt.Key_Backspace:
+            if self._typed:
+                self._typed = self._typed[:-1]
+                if not self.view().isVisible():
+                    self.showPopup()
+                self._apply_filter()
+            return
+        ch = event.text()
+        if ch and ch.isprintable() and not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
+            self._typed += ch
+            if not self.view().isVisible():
+                self.showPopup()
+            self._apply_filter()
+            return
+        super().keyPressEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -2731,6 +2807,7 @@ class _CenterCombo(QComboBox):
         painter.drawText(rect, Qt.AlignCenter | Qt.TextSingleLine, text)
 
     def showPopup(self):
+        self._capture_items()
         super().showPopup()
         popup = self.view().window()
         if popup is None or popup is self.window():
@@ -2751,6 +2828,13 @@ class _CenterCombo(QComboBox):
         if y < wg.top():
             y = wg.top()
         popup.move(x, y)
+
+    def hidePopup(self):
+        chosen = self.currentText()
+        super().hidePopup()
+        self._typed = ""
+        if self._full_items:
+            self._reload(self._full_items, keep=chosen, silent=False)
 
 
 class BetEntryTab(QWidget):
@@ -2943,6 +3027,37 @@ class BetEntryTab(QWidget):
         self._games = g or []
         for row in self._rows:
             self._refill_games(row)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.KeyPress:
+            chain = getattr(obj, "_leg_chain", None)
+            if chain:
+                key = ev.key()
+                if key in (Qt.Key_Right, Qt.Key_Left):
+                    if isinstance(obj, QLineEdit):
+                        pos = obj.cursorPosition()
+                        n = len(obj.text() or "")
+                        if key == Qt.Key_Right and pos < n and not obj.hasSelectedText():
+                            return super().eventFilter(obj, ev)
+                        if key == Qt.Key_Left and pos > 0 and not obj.hasSelectedText():
+                            return super().eventFilter(obj, ev)
+                    if isinstance(obj, QComboBox):
+                        obj.hidePopup()
+                    self._leg_focus(chain, obj, 1 if key == Qt.Key_Right else -1)
+                    return True
+        return super().eventFilter(obj, ev)
+
+    def _leg_focus(self, chain, obj, delta):
+        try:
+            i = chain.index(obj)
+        except ValueError:
+            return
+        j = i + delta
+        if 0 <= j < len(chain):
+            w = chain[j]
+            w.setFocus(Qt.TabFocusReason)
+            if isinstance(w, QLineEdit):
+                w.selectAll()
 
     def _cell_combo(self, items, min_chars=8):
         c = _CenterCombo()
@@ -3176,6 +3291,11 @@ class BetEntryTab(QWidget):
             f"QPushButton:hover{{color:white;}}")
         xb.clicked.connect(lambda: self._del_row(row))
         self._lt.setCellWidget(r, 7, xb)
+
+        chain = [gc, tc, pc, oc, li, mc, oi]
+        for w in chain:
+            w._leg_chain = chain
+            w.installEventFilter(self)
 
         gc.currentIndexChanged.connect(lambda i, rw=row: self._on_game(rw, i))
         pc.currentIndexChanged.connect(lambda i, rw=row: self._sync_team_from_player(rw, i))
