@@ -13,7 +13,7 @@ import sqlite3
 import requests
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 
 from PySide6.QtWidgets import (
@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.25"
+VERSION = "4.3.26"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -435,16 +435,12 @@ def db():
 # ─────────────────────────────────────────────
 def espn_get(url, params=None):
     """ESPN unofficial APIs. Do not send a browser UA — Akamai 403s those on summary."""
-    for attempt in range(3):
-        try:
-            r = requests.get(url, params=params, timeout=6)
-            r.raise_for_status()
-            return r.json()
-        except Exception:
-            if attempt == 2:
-                return None
-            time.sleep(0.2 * (attempt + 1))
-    return None
+    try:
+        r = requests.get(url, params=params, timeout=4)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
 
 
 def fetch_scoreboard(week=None, seasontype=2):
@@ -1104,13 +1100,22 @@ class BootWorker(QThread):
             n_teams = max(1, len(team_ids))
             player_count = 0
             est_players = n_teams * 53
-            for i, tid in enumerate(team_ids, 1):
-                self.progress.emit(f"LOADING TEAMS  {i} / {n_teams}")
+
+            def _one(tid):
                 g = teams[tid]
-                roster = fetch_roster(g["id"], tid) or []
-                player_count += len(roster)
-                self.progress.emit(
-                    f"LOADING PLAYERS  {player_count} / {est_players}")
+                return fetch_roster(g["id"], tid) or []
+
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                futs = [ex.submit(_one, tid) for tid in team_ids]
+                for i, fut in enumerate(as_completed(futs), 1):
+                    try:
+                        roster = fut.result(timeout=12) or []
+                    except Exception:
+                        roster = []
+                    player_count += len(roster)
+                    self.progress.emit(f"LOADING TEAMS  {i} / {n_teams}")
+                    self.progress.emit(
+                        f"LOADING PLAYERS  {player_count} / {est_players}")
             self.progress.emit("SYSTEM READY")
             self.finished_ok.emit(games, week_num)
         except Exception:
@@ -1345,6 +1350,11 @@ class LoadingScreen(QWidget):
     def _finish(self):
         self._stop_audio()
         games, week_num = self._pending if self._pending is not None else ([], None)
+        self.hide()
+        try:
+            QApplication.processEvents()
+        except Exception:
+            pass
         self.ready.emit(games, week_num)
         self.close()
 
@@ -3324,7 +3334,7 @@ class BetEntryTab(QWidget):
         outer.setSpacing(0)
 
         fs = 10
-        fm = QFontMetrics(bb(fs))
+        fnt = bb(fs)
         row_gap = 8
 
         def fl(t):
@@ -3339,10 +3349,10 @@ class BetEntryTab(QWidget):
             "PARLAY ID:", "BOOK", "STAKE", "BOOST %",
             "LEGS", "PARLAY ODDS", "BOOSTED ODDS", "TO WIN", "PAYOUT",
         ]
-        lab_w = max(fm.horizontalAdvance(t) for t in labels) + 8
-        pid_w = fm.horizontalAdvance("P10") + 36
-        book_w = fm.horizontalAdvance("POLYMARKET") + 36
-        stake_w = fm.horizontalAdvance("000.00") + 20
+        lab_w = max(text_px(fnt, t) for t in labels) + 8
+        pid_w = text_px(fnt, "P10") + 36
+        book_w = text_px(fnt, "POLYMARKET") + 36
+        stake_w = text_px(fnt, "000.00") + 20
         pid_block_w = lab_w + 8 + pid_w
 
         head = QWidget()
@@ -3421,7 +3431,7 @@ class BetEntryTab(QWidget):
             v.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             color = GREEN if field == "PAYOUT" else "#ffffff"
             v.setStyleSheet(f"color:{color}; background:transparent;")
-            v.setMinimumWidth(fm.horizontalAdvance("+$10000.00") + 8)
+            v.setMinimumWidth(text_px(fnt, "+$10000.00") + 8)
             fg.addWidget(lab, ri, 0, Qt.AlignVCenter | Qt.AlignLeft)
             fg.addWidget(v, ri, 1, Qt.AlignVCenter | Qt.AlignLeft)
             self._cv[field] = v
@@ -3431,7 +3441,7 @@ class BetEntryTab(QWidget):
             b.setFont(bb(fs))
             b.setCursor(Qt.PointingHandCursor)
             b.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-            b.setMinimumWidth(fm.horizontalAdvance(text) + 28)
+            b.setMinimumWidth(text_px(fnt, text) + 28)
             b.setStyleSheet(btn_ss(GREEN, "#000") if filled else ghost_ss(GREEN))
             return b
 
@@ -4480,6 +4490,8 @@ def main():
             try:
                 win = HeraWindow(games or [], week_num)
                 win.show()
+                win.raise_()
+                win.activateWindow()
                 app._win = win
             except Exception:
                 traceback.print_exc()
