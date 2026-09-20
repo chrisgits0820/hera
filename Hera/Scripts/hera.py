@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.0"
+VERSION = "4.3.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -696,11 +696,10 @@ def _colorize_statue(pm, hex_color):
 
 
 def _statue_rim(pm, hex_color="#1cbe1c"):
-    """Light #1cbe1c outline around the full silhouette."""
+    """Soft #1cbe1c glow along the full silhouette, then the detailed statue on top."""
     if pm.isNull():
         return QPixmap()
-    pad = 14
-    w, h = pm.width() + pad * 2, pm.height() + pad * 2
+    pad = 32
     sil = QPixmap(pm.size())
     sil.fill(Qt.transparent)
     sp = QPainter(sil)
@@ -708,14 +707,23 @@ def _statue_rim(pm, hex_color="#1cbe1c"):
     sp.setCompositionMode(QPainter.CompositionMode_SourceIn)
     sp.fillRect(sil.rect(), QColor(hex_color))
     sp.end()
-    out = QPixmap(w, h)
+    # Downscale + upscale = cheap gaussian. Interior is covered by the statue.
+    tiny = sil.scaled(
+        max(12, sil.width() // 10),
+        max(12, sil.height() // 10),
+        Qt.IgnoreAspectRatio,
+        Qt.SmoothTransformation,
+    )
+    glow_w, glow_h = pm.width() + pad * 2, pm.height() + pad * 2
+    blurred = tiny.scaled(glow_w, glow_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    out = QPixmap(glow_w, glow_h)
     out.fill(Qt.transparent)
     p = QPainter(out)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setOpacity(0.42)
-    for dx, dy in ((-6, 0), (6, 0), (0, -6), (0, 6), (-5, -5), (5, -5), (-5, 5), (5, 5),
-                   (-7, 0), (7, 0), (0, -7), (0, 7)):
-        p.drawPixmap(pad + dx, pad + dy, sil)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    p.setOpacity(0.38)
+    p.drawPixmap(0, 0, blurred)
+    p.setOpacity(0.22)
+    p.drawPixmap(2, 2, blurred)
     p.setOpacity(1.0)
     p.drawPixmap(pad, pad, pm)
     p.end()
@@ -873,7 +881,7 @@ class LoadingScreen(QWidget):
 
         hera_box = QRect(48, hera_top, w - 96, hera_h)
         p.setFont(hera_font)
-        for grow, alpha in ((18, 90), (10, 150), (4, 210)):
+        for grow, alpha in ((28, 55), (18, 100), (10, 160), (4, 220)):
             c = QColor(hera_c)
             c.setAlpha(alpha)
             p.setPen(c)
