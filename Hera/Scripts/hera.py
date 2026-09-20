@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.5"
+VERSION = "4.3.6"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -46,6 +46,7 @@ CHARCOAL = "#262626"  # CSV APP BACKGROUND / EUTHENIA
 os.makedirs(DATA_DIR, exist_ok=True)
 
 TEAM_COLORS = {}  # lowercase full name -> (bg_hex, fg_hex)
+ROSTER_CACHE = {}  # team_id -> [{name, jersey, position, active}]
 
 
 def load_team_colors():
@@ -321,7 +322,7 @@ def db():
 # ─────────────────────────────────────────────
 def espn_get(url, params=None):
     try:
-        r = requests.get(url, params=params, timeout=8)
+        r = requests.get(url, params=params, timeout=4)
         r.raise_for_status()
         return r.json()
     except Exception:
@@ -441,24 +442,36 @@ def fetch_plays(game_id, limit=300):
     return list(reversed(plays))
 
 
-def fetch_roster(game_id, team_id):
+def fetch_roster(game_id, team_id, force=False):
     """Fetch team roster — tries live game endpoint first, falls back to team roster."""
-    # Try game-specific roster
+    key = str(team_id)
+    if not force and key in ROSTER_CACHE:
+        return ROSTER_CACHE[key]
     url = f"{ESPN_CORE}/events/{game_id}/competitions/{game_id}/competitors/{team_id}/roster"
     data = espn_get(url)
     players = _parse_roster_entries(data.get("entries", []) if data else [])
-    if players:
-        return players
-    # Fallback: team season roster
-    url2 = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/roster"
-    data2 = espn_get(url2)
-    if not data2:
-        return []
-    entries = []
-    for group in data2.get("athletes", []):
-        entries.extend(group.get("items", []) if isinstance(group, dict) and "items" in group else (
-            [group] if isinstance(group, dict) else []))
-    return _parse_roster_entries(entries)
+    if not players:
+        url2 = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/roster"
+        data2 = espn_get(url2)
+        entries = []
+        if data2:
+            for group in data2.get("athletes", []):
+                entries.extend(group.get("items", []) if isinstance(group, dict) and "items" in group else (
+                    [group] if isinstance(group, dict) else []))
+        players = _parse_roster_entries(entries)
+    ROSTER_CACHE[key] = players
+    return players
+
+
+def roster_by_side(game):
+    """Away names A–Z, then home names A–Z. Each item is (name, team_abbr)."""
+    if not game:
+        return [], []
+    away = sorted(fetch_roster(game["id"], game["away"]["id"]) or [],
+                  key=lambda p: (p.get("name") or "").lower())
+    home = sorted(fetch_roster(game["id"], game["home"]["id"]) or [],
+                  key=lambda p: (p.get("name") or "").lower())
+    return away, home
 
 
 def _parse_roster_entries(entries):
@@ -2145,6 +2158,58 @@ class PlayByPlayTab(QWidget):
 # ─────────────────────────────────────────────
 # GAME TRACKER TAB
 # ─────────────────────────────────────────────
+class GameFetchWorker(QThread):
+    """Pull ESPN payloads off the UI thread so clicks stay responsive."""
+    bundle = Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._game = None
+        self._week = None
+        self._pending = None
+
+    def fetch(self, game, week=None):
+        job = (game, week)
+        if self.isRunning():
+            self._pending = job
+            return
+        self._game, self._week = job
+        self.start()
+
+    def run(self):
+        game, week = self._game, self._week
+        if not game:
+            return
+        try:
+            plays = fetch_plays(game["id"]) or []
+            summary = fetch_summary(game["id"])
+            fresh, _ = fetch_scoreboard(week=week)
+            current = game
+            for g in (fresh or []):
+                if str(g.get("id")) == str(game.get("id")):
+                    current = g
+                    break
+            away_ls = fetch_linescores(current["id"], current["away"]["id"])
+            home_ls = fetch_linescores(current["id"], current["home"]["id"])
+            self.bundle.emit({
+                "game": current,
+                "summary": summary,
+                "plays": plays,
+                "away_ls": away_ls,
+                "home_ls": home_ls,
+                "games": fresh,
+            })
+        except Exception:
+            traceback.print_exc()
+            self.bundle.emit(None)
+        self._game = None
+
+    def take_pending(self):
+        job = self._pending
+        self._pending = None
+        return job
+
+
 class GameTrackerTab(QWidget):
     game_updated = Signal(object, object, object, object, object, object)
 
@@ -2158,6 +2223,8 @@ class GameTrackerTab(QWidget):
         self._week = None  # None = current week (ESPN default)
         self._week_num = None  # actual week number from ESPN
         self._build()
+        self._fetch = GameFetchWorker(self)
+        self._fetch.bundle.connect(self._apply_bundle)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
         self._timer.setInterval(5000)
@@ -2318,31 +2385,48 @@ class GameTrackerTab(QWidget):
 
     def _load(self, game):
         self._current = game
+        self._fetch.fetch(game, self._week)
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def _apply_bundle(self, data):
+        if not data:
+            pending = self._fetch.take_pending()
+            if pending:
+                self._fetch.fetch(*pending)
+            return
+        game = data.get("game") or self._current
+        if not game:
+            return
+        self._current = game
+        summary = data.get("summary")
+        self._summary = summary
+        fresh = data.get("games")
+        if fresh:
+            self._games = fresh
+        plays = data.get("plays") or []
+        if plays:
+            self._last_seq = plays[0].get("seq", -1)
         try:
-            summary = fetch_summary(game["id"])
-            self._summary = summary
-
-            away_ls = fetch_linescores(game["id"], game["away"]["id"])
-            home_ls = fetch_linescores(game["id"], game["home"]["id"])
-
             self._score_hdr.refresh(game, summary)
-            self._boxscore.refresh(game, away_ls, home_ls)
+            self._boxscore.refresh(game, data.get("away_ls"), data.get("home_ls"))
             self._winprob.refresh(game, summary)
-
             self._legs_panel.set_game(str(game["id"]), self._games)
             self._legs_panel.refresh(game, summary)
-
-            bet_players = self._get_bet_players(game["id"])
             self._load_stat_boxes(game, summary)
-
-            plays = fetch_plays(game["id"])
-            if plays:
-                self._last_seq = plays[0].get("seq", -1)
-            self.game_updated.emit(game, summary, plays or [], away_ls, home_ls, bet_players)
-            if not self._timer.isActive():
-                self._timer.start()
+            bet_players = self._get_bet_players(game["id"])
+            self.game_updated.emit(
+                game, summary, plays, data.get("away_ls"), data.get("home_ls"), bet_players)
         except Exception:
             traceback.print_exc()
+        pending = self._fetch.take_pending()
+        if pending:
+            self._fetch.fetch(*pending)
+
+    def _poll(self):
+        if not self._current:
+            return
+        self._fetch.fetch(self._current, self._week)
 
     def _load_stat_boxes(self, game, summary):
         """Fetch all 6 stat groups and populate the away/home StatBoxes."""
@@ -2403,37 +2487,6 @@ class GameTrackerTab(QWidget):
             return players
         except Exception:
             return []
-
-    def _poll(self):
-        """5-second poll: always refresh scores, stats, and bets for the tracked game."""
-        if not self._current:
-            return
-        try:
-            plays = fetch_plays(self._current["id"]) or []
-            if plays:
-                self._last_seq = plays[0].get("seq", self._last_seq)
-            summary = fetch_summary(self._current["id"])
-            self._summary = summary
-
-            fresh, _ = fetch_scoreboard(week=self._week)
-            for g in (fresh or []):
-                if str(g["id"]) == str(self._current["id"]):
-                    self._current = g
-                    break
-
-            away_ls = fetch_linescores(self._current["id"], self._current["away"]["id"])
-            home_ls = fetch_linescores(self._current["id"], self._current["home"]["id"])
-
-            self._score_hdr.refresh(self._current, summary)
-            self._boxscore.refresh(self._current, away_ls, home_ls)
-            self._winprob.refresh(self._current, summary)
-            self._legs_panel.refresh(self._current, summary)
-            self._load_stat_boxes(self._current, summary)
-
-            bet_players = self._get_bet_players(self._current["id"])
-            self.game_updated.emit(self._current, summary, plays, away_ls, home_ls, bet_players)
-        except Exception:
-            traceback.print_exc()
 
 
 # ─────────────────────────────────────────────
@@ -2534,23 +2587,31 @@ class AddLegDialog(QDialog):
         self._tc.addItem(g["away"]["abbr"])
         self._tc.addItem(g["home"]["abbr"])
         self._tc.blockSignals(False)
+        self._fill_players(g)
 
     def _on_team(self, idx):
-        if idx <= 0:
-            self._pc.clear()
-            self._pc.addItem("N/A")
-            return
         gi = self._gc.currentIndex()
-        if gi < 0 or gi >= len(self._games):
-            return
-        g = self._games[gi]
-        abbr = self._tc.currentText()
-        tid = g["away"]["id"] if abbr == g["away"]["abbr"] else g["home"]["id"]
-        roster = fetch_roster(g["id"], tid)
+        g = self._games[gi] if 0 <= gi < len(self._games) else None
+        self._fill_players(g)
+
+    def _fill_players(self, game):
+        saved = self._pc.currentText()
+        self._pc.blockSignals(True)
         self._pc.clear()
         self._pc.addItem("N/A")
-        for p in roster:
-            self._pc.addItem(p["name"])
+        if game:
+            away, home = roster_by_side(game)
+            for p in away:
+                self._pc.addItem(p["name"], game["away"]["abbr"])
+            if away and home:
+                self._pc.insertSeparator(self._pc.count())
+            for p in home:
+                self._pc.addItem(p["name"], game["home"]["abbr"])
+        if saved:
+            i = self._pc.findText(saved)
+            if i >= 0:
+                self._pc.setCurrentIndex(i)
+        self._pc.blockSignals(False)
 
     def get_data(self):
         gi = self._gc.currentIndex()
@@ -2603,14 +2664,13 @@ class BetEntryTab(QWidget):
         hr.addWidget(self._pcb)
         outer.addLayout(hr)
 
-        # Info + calc card
+        # Centered compact BET INFO + CALCULATIONS
         ic = QWidget()
         ic.setStyleSheet(card_ss())
-        icl = QGridLayout(ic)
-        icl.setContentsMargins(16, 14, 16, 14)
-        icl.setSpacing(10)
-        icl.setColumnStretch(1, 1)
-        icl.setColumnStretch(3, 1)
+        wrap = QHBoxLayout(ic)
+        wrap.setContentsMargins(16, 14, 16, 14)
+        wrap.setSpacing(40)
+        wrap.addStretch(1)
 
         def hl(t):
             l = QLabel(t)
@@ -2621,42 +2681,63 @@ class BetEntryTab(QWidget):
         def fl(t):
             l = QLabel(t)
             l.setFont(bb(11))
+            l.setFixedWidth(72)
             l.setStyleSheet(f"color:{TEXT_DIM}; background:transparent;")
             return l
 
-        icl.addWidget(hl("BET INFO"), 0, 0, 1, 2)
+        info = QWidget()
+        info.setStyleSheet("background:transparent;")
+        info.setFixedWidth(340)
+        ig = QGridLayout(info)
+        ig.setContentsMargins(0, 0, 0, 0)
+        ig.setHorizontalSpacing(8)
+        ig.setVerticalSpacing(8)
+        ig.addWidget(hl("BET INFO"), 0, 0, 1, 2)
         self._bk = QComboBox()
         self._bk.setFont(bb(12))
         self._bk.setStyleSheet(combo_ss())
         self._bk.addItems(BOOKS)
-        icl.addWidget(fl("BOOK"), 1, 0)
-        icl.addWidget(self._bk, 1, 1)
+        self._bk.setFixedWidth(220)
+        ig.addWidget(fl("BOOK"), 1, 0)
+        ig.addWidget(self._bk, 1, 1)
         self._sk = QLineEdit("50.00")
         self._sk.setFont(bb(12))
         self._sk.setStyleSheet(input_ss())
+        self._sk.setFixedWidth(120)
         self._sk.textChanged.connect(self._recalc)
-        icl.addWidget(fl("STAKE"), 2, 0)
-        icl.addWidget(self._sk, 2, 1)
+        ig.addWidget(fl("STAKE"), 2, 0)
+        ig.addWidget(self._sk, 2, 1)
         self._bo = QLineEdit("0")
         self._bo.setFont(bb(12))
         self._bo.setStyleSheet(input_ss())
+        self._bo.setFixedWidth(120)
         self._bo.textChanged.connect(self._recalc)
-        icl.addWidget(fl("BOOST %"), 3, 0)
-        icl.addWidget(self._bo, 3, 1)
+        ig.addWidget(fl("BOOST %"), 3, 0)
+        ig.addWidget(self._bo, 3, 1)
+        wrap.addWidget(info)
 
-        icl.addWidget(hl("CALCULATIONS"), 0, 2, 1, 2)
+        calc = QWidget()
+        calc.setStyleSheet("background:transparent;")
+        calc.setFixedWidth(280)
+        cg = QGridLayout(calc)
+        cg.setContentsMargins(0, 0, 0, 0)
+        cg.setHorizontalSpacing(10)
+        cg.setVerticalSpacing(4)
+        cg.addWidget(hl("CALCULATIONS"), 0, 0, 1, 2)
         self._cv = {}
         for ri, (field, big) in enumerate([
             ("LEGS", False), ("PARLAY ODDS", False), ("BOOSTED ODDS", False),
             ("STAKE", False), ("TO WIN", False), ("PAYOUT", True)
         ], start=1):
-            icl.addWidget(fl(field), ri, 2)
+            cg.addWidget(fl(field), ri, 0)
             v = QLabel("—")
             v.setFont(bb(14 if big else 12))
-            v.setAlignment(Qt.AlignRight)
+            v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             v.setStyleSheet(f"color:{GREEN if big else TEXT}; background:transparent;")
-            icl.addWidget(v, ri, 3)
+            cg.addWidget(v, ri, 1)
             self._cv[field] = v
+        wrap.addWidget(calc)
+        wrap.addStretch(1)
         outer.addWidget(ic)
 
         # Leg table
@@ -2715,8 +2796,9 @@ class BetEntryTab(QWidget):
         br.addWidget(ab)
         br.addSpacing(6)
         br.addWidget(nb)
-        br.addStretch()
+        br.addSpacing(8)
         br.addWidget(sb)
+        br.addStretch()
         outer.addLayout(br)
         outer.addStretch()
         self._load_parlay()
@@ -2833,39 +2915,53 @@ class BetEntryTab(QWidget):
         if prev:
             self._set_combo(gc, prev)
         gc.blockSignals(False)
-        self._populate_teams(row, gc.currentIndex(), keep_team=True)
+        self._on_game(row, gc.currentIndex(), keep=True)
 
-    def _populate_teams(self, row, idx, keep_team=False):
+    def _on_game(self, row, idx, keep=False):
         tc, pc = row["tc"], row["pc"]
-        saved_team = tc.currentText() if keep_team else ""
-        saved_player = pc.currentText() if keep_team else ""
+        saved_team = tc.currentText() if keep else ""
+        saved_player = pc.currentText() if keep else ""
         tc.blockSignals(True)
         tc.clear()
         tc.addItem("N/A")
-        if 0 <= idx < len(self._games):
-            g = self._games[idx]
+        g = self._games[idx] if 0 <= idx < len(self._games) else None
+        if g:
             tc.addItem(g["away"]["abbr"])
             tc.addItem(g["home"]["abbr"])
         if saved_team:
             self._set_combo(tc, saved_team)
         tc.blockSignals(False)
-        self._populate_players(row, tc.currentIndex(), keep_player=keep_team, saved_player=saved_player)
+        self._fill_players(row, g, saved_player if keep else "")
 
-    def _populate_players(self, row, t_idx, keep_player=False, saved_player=""):
-        gc, tc, pc = row["gc"], row["tc"], row["pc"]
+    def _fill_players(self, row, game, saved_player=""):
+        pc = row["pc"]
         pc.blockSignals(True)
         pc.clear()
         pc.addItem("N/A")
-        gi = gc.currentIndex()
-        if gi >= 0 and gi < len(self._games) and t_idx > 0:
-            g = self._games[gi]
-            abbr = tc.currentText()
-            tid = g["away"]["id"] if abbr == g["away"]["abbr"] else g["home"]["id"]
-            for p in fetch_roster(g["id"], tid) or []:
-                pc.addItem(p["name"])
-        if keep_player and saved_player:
+        if game:
+            away, home = roster_by_side(game)
+            for p in away:
+                pc.addItem(p["name"], game["away"]["abbr"])
+            if away and home:
+                pc.insertSeparator(pc.count())
+            for p in home:
+                pc.addItem(p["name"], game["home"]["abbr"])
+        if saved_player:
             self._set_combo(pc, saved_player)
         pc.blockSignals(False)
+
+    def _sync_team_from_player(self, row, idx):
+        abbr = row["pc"].itemData(idx)
+        if abbr:
+            self._set_combo(row["tc"], abbr)
+
+    def _populate_teams(self, row, idx, keep_team=False):
+        self._on_game(row, idx, keep=keep_team)
+
+    def _populate_players(self, row, t_idx, keep_player=False, saved_player=""):
+        gi = row["gc"].currentIndex()
+        g = self._games[gi] if 0 <= gi < len(self._games) else None
+        self._fill_players(row, g, saved_player if keep_player else "")
 
     def _insert_row(self, data=None):
         data = data or {}
@@ -2909,13 +3005,14 @@ class BetEntryTab(QWidget):
         xb.clicked.connect(lambda: self._del_row(row))
         self._lt.setCellWidget(r, 7, xb)
 
-        gc.currentIndexChanged.connect(lambda i, rw=row: self._populate_teams(rw, i))
-        tc.currentIndexChanged.connect(lambda i, rw=row: self._populate_players(rw, i))
+        gc.currentIndexChanged.connect(lambda i, rw=row: self._on_game(rw, i))
+        pc.currentIndexChanged.connect(lambda i, rw=row: self._sync_team_from_player(rw, i))
         oi.textChanged.connect(self._recalc)
-        self._populate_teams(row, gc.currentIndex(), keep_team=True)
+        self._on_game(row, gc.currentIndex(), keep=True)
         if data.get("team"):
             self._set_combo(tc, data["team"])
-            self._populate_players(row, tc.currentIndex(), keep_player=True, saved_player=data.get("player", ""))
+        if data.get("player"):
+            self._set_combo(pc, data["player"])
         if data.get("ou"):
             self._set_combo(oc, data["ou"])
         if data.get("market"):
@@ -3023,17 +3120,48 @@ class BetEntryTab(QWidget):
         for row, s in zip(self._rows, snaps):
             row["lid"] = s["lid"]
 
+    def _live_labels(self):
+        conn = db()
+        c = conn.cursor()
+        c.execute("SELECT DISTINCT parlay_label FROM parlays WHERE status='LIVE'")
+        labels = {r[0] for r in c.fetchall()}
+        conn.close()
+        return labels
+
+    def _next_free_label(self):
+        live = self._live_labels()
+        try:
+            start = int(str(self._pcb.currentText()).lstrip("Pp") or 1)
+        except Exception:
+            start = 1
+        for off in range(0, 10):
+            n = (start - 1 + off) % 10 + 1
+            lab = f"P{n}"
+            if lab not in live:
+                return lab
+        return self._pcb.currentText()
+
+    def _select_label(self, label):
+        i = self._pcb.findText(label)
+        if i < 0:
+            return
+        self._loading = True
+        self._pcb.setCurrentIndex(i)
+        self._loading = False
+
     def _new_parlay(self):
-        label = self._pcb.currentText()
+        self._persist()
+        nxt = self._next_free_label()
         conn = db()
         conn.execute(
             "DELETE FROM legs WHERE parlay_id IN "
-            "(SELECT id FROM parlays WHERE parlay_label=? AND status='PENDING')", (label,))
+            "(SELECT id FROM parlays WHERE parlay_label=? AND status='PENDING')", (nxt,))
         conn.execute(
-            "DELETE FROM parlays WHERE parlay_label=? AND status='PENDING'", (label,))
+            "DELETE FROM parlays WHERE parlay_label=? AND status='PENDING'", (nxt,))
         conn.commit()
         conn.close()
         self._parlay_id = None
+        self._select_label(nxt)
         self._sk.setText("50.00")
         self._bo.setText("0")
         self._bk.setCurrentIndex(0)
@@ -3071,6 +3199,7 @@ class BetEntryTab(QWidget):
         self._clear_table()
         self._sk.setText("50.00")
         self._bo.setText("0")
+        self._select_label(self._next_free_label())
         self._load_parlay()
 
 
@@ -3105,8 +3234,11 @@ class ActiveLegsTab(QWidget):
         lay.addWidget(scroll)
 
     def set_games(self, games):
-        self._games = games
+        self._games = games or []
         self.refresh()
+
+    def sync_games(self, games):
+        self._games = games or []
 
     def refresh(self):
         while self._il.count() > 1:
@@ -3143,19 +3275,28 @@ class ActiveLegsTab(QWidget):
     def _make_block(self, par, legs):
         pid, label, book, stake, boost, status, created = par
         calc = calc_parlay([leg[9] for leg in legs if leg[9]], stake or 0, boost or 0)
+        any_live = False
+        for leg in legs:
+            if len(leg) < 3:
+                continue
+            gi = next((g for g in self._games if str(g["id"]) == str(leg[2])), None)
+            if gi and gi.get("state") == "in":
+                any_live = True
+                break
+        phase = "LIVE" if any_live else "UPCOMING"
+
         block = QWidget()
-        block.setStyleSheet(card_ss())
+        block.setStyleSheet("background:transparent;")
         bl = QVBoxLayout(block)
         bl.setContentsMargins(0, 0, 0, 0)
-        bl.setSpacing(0)
+        bl.setSpacing(2)
 
-        # Parlay header row
         hdr = QWidget()
-        hdr.setFixedHeight(53)
-        hdr.setStyleSheet(f"background:{HDR_BG}; border-bottom:0.5px solid {BORDER};")
+        hdr.setFixedHeight(34)
+        hdr.setStyleSheet(f"background:transparent; border:none; border-bottom:1px solid {BORDER};")
         hl = QHBoxLayout(hdr)
-        hl.setContentsMargins(14, 0, 14, 0)
-        hl.setSpacing(14)
+        hl.setContentsMargins(8, 0, 8, 0)
+        hl.setSpacing(10)
 
         def hl_lbl(t, color=TEXT_DIM):
             l = QLabel(t)
@@ -3167,23 +3308,13 @@ class ActiveLegsTab(QWidget):
             sep = QFrame()
             sep.setFrameShape(QFrame.VLine)
             sep.setFixedWidth(1)
-            sep.setFixedHeight(18)
+            sep.setFixedHeight(16)
             sep.setStyleSheet(f"background:{BORDER}; border:none;")
             return sep
 
         hl.addWidget(hl_lbl(f"{label}", TEXT))
         hl.addWidget(hl_sep())
         hl.addWidget(hl_lbl(f"{len(legs)} LEGS"))
-        hl.addWidget(hl_sep())
-
-        sb = QLabel(status)
-        sb.setFont(bb(10))
-        sb.setStyleSheet(
-            f"background:{GREEN if status == 'LIVE' else BORDER}; "
-            f"color:{'#000' if status == 'LIVE' else TEXT_DIM}; "
-            f"border-radius:3px; padding:1px 6px;")
-        hl.addWidget(sb)
-
         if book:
             hl.addWidget(hl_sep())
             hl.addWidget(hl_lbl(f"{book}"))
@@ -3196,7 +3327,6 @@ class ActiveLegsTab(QWidget):
             hl.addWidget(hl_lbl(f"${stake:.0f}", TEXT))
             hl.addWidget(hl_sep())
             hl.addWidget(hl_lbl(f"${calc['payout']:.0f}", GREEN))
-
         hl.addStretch()
         ab = QPushButton("ARCHIVE")
         ab.setFont(bb(9))
@@ -3204,9 +3334,19 @@ class ActiveLegsTab(QWidget):
         ab.setFixedWidth(70)
         ab.clicked.connect(partial(self._archive, pid))
         hl.addWidget(ab)
+        hl.addWidget(hl_sep())
+        sb = QLabel(phase)
+        sb.setFont(bb(10))
+        if phase == "LIVE":
+            sb.setStyleSheet(
+                f"background:{GREEN}; color:#000; border-radius:3px; padding:1px 8px;")
+        else:
+            sb.setStyleSheet(
+                f"background:transparent; color:{TEXT_DIM}; border:0.5px solid {BORDER}; "
+                f"border-radius:3px; padding:1px 8px;")
+        hl.addWidget(sb)
         bl.addWidget(hdr)
 
-        # Leg table
         tbl = QTableWidget(len(legs), 10)
         tbl.setHorizontalHeaderLabels(
             ["GAME", "TEAM", "PLAYER", "O/U", "LINE", "MARKET",
@@ -3215,9 +3355,10 @@ class ActiveLegsTab(QWidget):
         tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         tbl.setSelectionMode(QTableWidget.NoSelection)
         tbl.setStyleSheet(table_ss())
-        tbl.setFixedHeight(39 * len(legs) + 45)
+        tbl.setFixedHeight(32 * len(legs) + 34)
         tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         tbl.setShowGrid(False)
+        tbl.setContentsMargins(0, 0, 0, 0)
 
         for r, leg in enumerate(legs):
             if len(leg) < 12:
@@ -3235,12 +3376,7 @@ class ActiveLegsTab(QWidget):
                     quarter = f"Q{p}"
                 score = f"{gi['away']['score']}-{gi['home']['score']}"
                 is_tracking = gi.get("state") == "in"
-                gid = str(game_id)
-                if gid not in self._scache:
-                    s = fetch_summary(gid)
-                    if s:
-                        self._scache[gid] = s
-                s = self._scache.get(gid)
+                s = self._scache.get(str(game_id))
                 if s and player and player != "N/A":
                     if team == gi["away"]["abbr"]:
                         tid = gi["away"]["id"]
@@ -3308,48 +3444,134 @@ class ArchiveTab(QWidget):
         self.setStyleSheet(f"background:{BG};")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 12, 16, 12)
-        self._tbl = QTableWidget(0, 7)
-        self._tbl.setHorizontalHeaderLabels(
-            ["PARLAY", "BOOK", "STAKE", "BOOST", "PARLAY ODDS", "PAYOUT", "DATE"])
-        self._tbl.verticalHeader().setVisible(False)
-        self._tbl.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._tbl.setSelectionMode(QTableWidget.NoSelection)
-        self._tbl.setStyleSheet(table_ss())
-        self._tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self._tbl.setShowGrid(False)
-        lay.addWidget(self._tbl)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
+        self._con = QWidget()
+        self._con.setStyleSheet(f"background:{BG};")
+        self._il = QVBoxLayout(self._con)
+        self._il.setContentsMargins(0, 0, 0, 0)
+        self._il.setSpacing(14)
+        self._il.addStretch()
+        scroll.setWidget(self._con)
+        lay.addWidget(scroll)
         self.refresh()
 
     def refresh(self):
+        while self._il.count() > 1:
+            item = self._il.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         conn = db()
         c = conn.cursor()
         c.execute("SELECT * FROM parlays WHERE status='ARCHIVED' ORDER BY id DESC")
         rows = c.fetchall()
         conn.close()
-        self._tbl.setRowCount(len(rows))
-        for r, row in enumerate(rows):
+        if not rows:
+            el = QLabel("NO ARCHIVED PARLAYS")
+            el.setFont(bb(13))
+            el.setAlignment(Qt.AlignCenter)
+            el.setStyleSheet(f"color:{TEXT_DIM}; padding:40px; background:transparent;")
+            self._il.insertWidget(0, el)
+            return
+        for row in rows:
             if not row or len(row) < 7:
                 continue
-            pid, label, book, stake, boost, status, created = row[:7]
+            pid = row[0]
             conn = db()
             c2 = conn.cursor()
-            c2.execute("SELECT odds FROM legs WHERE parlay_id=?", (pid,))
-            leg_odds = [x[0] for x in c2.fetchall() if x[0]]
+            c2.execute("SELECT * FROM legs WHERE parlay_id=?", (pid,))
+            legs = c2.fetchall()
             conn.close()
-            calc = calc_parlay(leg_odds, stake or 0, boost or 0)
-            vals = [label, book or "—",
-                    f"${stake:.2f}" if stake else "—",
-                    f"{int(boost)}%" if boost else "0%",
-                    calc["parlay"],
-                    f"${calc['payout']:.2f}",
-                    created[:10] if created else "—"]
-            for ci, val in enumerate(vals):
-                it = QTableWidgetItem(str(val))
-                it.setFont(bb(11))
-                it.setForeground(QColor(TEXT))
-                it.setTextAlignment(Qt.AlignCenter)
-                self._tbl.setItem(r, ci, it)
-            self._tbl.setRowHeight(r, 28)
+            self._il.insertWidget(self._il.count() - 1, self._make_block(row, legs))
+
+    def _make_block(self, par, legs):
+        pid, label, book, stake, boost, status, created = par[:7]
+        calc = calc_parlay([leg[9] for leg in legs if len(leg) > 9 and leg[9]], stake or 0, boost or 0)
+        block = QWidget()
+        block.setStyleSheet("background:transparent;")
+        bl = QVBoxLayout(block)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(2)
+
+        hdr = QWidget()
+        hdr.setFixedHeight(34)
+        hdr.setStyleSheet(f"background:transparent; border:none; border-bottom:1px solid {BORDER};")
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(8, 0, 8, 0)
+        hl.setSpacing(10)
+
+        def hl_lbl(t, color=TEXT_DIM):
+            l = QLabel(t)
+            l.setFont(bb(10))
+            l.setStyleSheet(f"color:{color}; background:transparent;")
+            return l
+
+        def hl_sep():
+            sep = QFrame()
+            sep.setFrameShape(QFrame.VLine)
+            sep.setFixedWidth(1)
+            sep.setFixedHeight(16)
+            sep.setStyleSheet(f"background:{BORDER}; border:none;")
+            return sep
+
+        hl.addWidget(hl_lbl(label or "—", TEXT))
+        hl.addWidget(hl_sep())
+        hl.addWidget(hl_lbl(f"{len(legs)} LEGS"))
+        hl.addWidget(hl_sep())
+        hl.addWidget(hl_lbl(book or "—"))
+        hl.addWidget(hl_sep())
+        hl.addWidget(hl_lbl(calc["parlay"], TEXT))
+        hl.addWidget(hl_sep())
+        hl.addWidget(hl_lbl(f"{int(boost or 0)}%"))
+        hl.addWidget(hl_sep())
+        hl.addWidget(hl_lbl(f"${stake:.0f}" if stake else "—", TEXT))
+        hl.addWidget(hl_sep())
+        hl.addWidget(hl_lbl(f"${calc['payout']:.2f}", GREEN))
+        hl.addStretch()
+        hl.addWidget(hl_lbl(created[:10] if created else "—"))
+        bl.addWidget(hdr)
+
+        cols = ["GAME", "TEAM", "PLAYER", "O/U", "LINE", "MARKET", "ODDS", "STATUS"]
+        tbl = QTableWidget(max(len(legs), 0), len(cols))
+        tbl.setHorizontalHeaderLabels(cols)
+        tbl.verticalHeader().setVisible(False)
+        tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+        tbl.setSelectionMode(QTableWidget.NoSelection)
+        tbl.setStyleSheet(table_ss())
+        tbl.setShowGrid(False)
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        if not legs:
+            tbl.setRowCount(1)
+            it = QTableWidgetItem("NO LEGS")
+            it.setFont(bb(11))
+            it.setForeground(QColor(TEXT_DIM))
+            it.setTextAlignment(Qt.AlignCenter)
+            tbl.setItem(0, 0, it)
+            tbl.setSpan(0, 0, 1, len(cols))
+            tbl.setFixedHeight(60)
+        else:
+            tbl.setFixedHeight(32 * len(legs) + 34)
+            for r, leg in enumerate(legs):
+                vals = [
+                    leg[3] if len(leg) > 3 else "—",
+                    leg[4] if len(leg) > 4 else "—",
+                    leg[5] if len(leg) > 5 else "—",
+                    leg[7] if len(leg) > 7 else "—",
+                    leg[8] if len(leg) > 8 else "—",
+                    leg[6] if len(leg) > 6 else "—",
+                    leg[9] if len(leg) > 9 else "—",
+                    (leg[11] if len(leg) > 11 else "—") or "—",
+                ]
+                for ci, val in enumerate(vals):
+                    it = QTableWidgetItem(str(val or "—"))
+                    it.setFont(bb(11))
+                    it.setForeground(QColor(TEXT))
+                    it.setTextAlignment(Qt.AlignCenter)
+                    tbl.setItem(r, ci, it)
+                tbl.setRowHeight(r, 28)
+        bl.addWidget(tbl)
+        return block
 
 
 # ─────────────────────────────────────────────
@@ -3383,6 +3605,7 @@ class HeraWindow(QMainWindow):
         self._ar = ArchiveTab()
 
         self._gt.game_updated.connect(self._pbp_tab.sync)
+        self._gt.game_updated.connect(self._on_tracker_update)
         self._be.submitted.connect(self._ar.refresh)
         self._be.submitted.connect(self._gt._legs_panel.refresh)
         self._be.submitted.connect(self._al.refresh)
@@ -3400,6 +3623,11 @@ class HeraWindow(QMainWindow):
         self._gt.set_games(games, week_num=week_num)
         self._be.set_games(games)
         self._al.set_games(games)
+
+    def _on_tracker_update(self, game, summary, plays, away_ls, home_ls, bet_players):
+        if game and summary:
+            self._al._scache[str(game["id"])] = summary
+        self._al.sync_games(self._gt._games)
 
     def _switch(self, idx):
         self._stack.setCurrentIndex(idx)
