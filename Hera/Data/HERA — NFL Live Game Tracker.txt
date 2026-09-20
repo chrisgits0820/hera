@@ -1,0 +1,187 @@
+HERA — NFL Live Game Tracker
+
+
+Hera is a PySide6 desktop application that tracks NFL games live. It has four tabs: Game Tracker, Bet Entry, Active Legs, and Archive.
+
+
+File locations:
+
+
+* Script: /Users/chris/Hera\Script\hera.py
+* Data/DB: /Users/chris/Hera\Data\hera.db
+* Font: /Users/chris/Hera\BebasNeue-Regular.ttf
+* Team logos: /Users/chris/Hera\Script\ — 32 PNG files named {full-team-name}-logo.png (e.g. kansas-city-chiefs-logo.png) — already transparent, do not process them
+* Loading screen: /Users/chris/Hera\hera_loading_screen.png
+
+
+Design system:
+
+
+* Font: Bebas Neue throughout — every single element
+* Background: #1a1a1a
+* Card background: #222222
+* Border: #333333
+* Green accent: #1cbe1c
+* Red: #e24b4a
+* Gold: #f0c040
+* Text: #e0e0e0
+
+
+All team colors come from the hex codes CSV in the project — background hex and font hex per team
+
+
+The app must be fully responsive — all content scales with window size including text and table, no fixed-width layouts
+
+
+LOADING SCREEN:
+
+
+* Frameless centered window
+* Dark 
+* #1a1a1a background
+* Hera statue PNG (hera_loading_screen.png) centered
+* "HERA" in large Bebas Neue below the statue — all 4 letters glow together as one word, brightness increases proportionally as the progress bar fills from 0 to 100%
+* Status text below letters (e.g. "FETCHING NFL SCHEDULE")
+* Thin green progress bar below status text
+* Percentage label below bar
+
+
+NAV BAR:
+
+
+Black 
+#000000 background
+"HERA" in green 
+
+
+#1cbe1c, large Bebas Neue, far left — no subtitle text
+Four tabs right-aligned: GAME TRACKER, BET ENTRY, ACTIVE LEGS, ARCHIVE
+Active tab: white border box around the text
+Hover: green underline only — no box, no background change
+
+
+GAME TRACKER TAB — top to bottom:
+
+
+Section 1 — Game selector: Small dropdown (not full width) on the left showing game matchup and time. Green TRACK button immediately to the right. Dark background row
+
+
+Section 2 — Score header:
+Two team panels side by side with a center panel between them.
+
+
+* AWAY panel (left): logo top-left → team name below logo → record below name → football icon if on offense. Score large on the RIGHT side of the panel. Panel background = team's background hex. Team name and record = team's font hex.
+* CENTER panel: #1a1a1a background. "● LIVE" in green. Clock in large white. Quarter below. Down & distance below that.
+* HOME panel (right): Score large on the LEFT side. Logo top-right → team name below logo → record below name. Panel background = team's background hex. Team name and record = team's font hex.
+
+
+Section 3 — Boxscore:
+¾ width table, centered. Columns: TEAM | Q1 | Q2 | Q3 | Q4 | TOTAL. Team cell shows logo + abbreviation on team color background. All text white.
+
+
+Section 4 — Win probability bar:
+Full-width thin bar split by team colors. Percentage labels on each end in team colors. "WIN PROBABILITY" label centered in dim text above the bar.
+
+
+Section 5 — Active Bets panel:
+* Header: "MY ACTIVE BETS — {AWAY}@{HOME}" left, parlay info right.
+* Columns: TEAM (logo + abbr on team color) | PLAYER | PROP | O/U | LINE | CURRENT | NEEDS | STATUS
+* Default text: white
+* Won leg: entire row text green
+* Lost leg: entire row text red
+
+
+Section 6 — Stat boxes (side by side):
+Away team left, home team right. Each has three sections:
+
+
+PASSING header bar in team colors with logo on right (away) or left (home). Columns: # | POS | 
+
+
+PLAYER | C/ATT | YDS | TD | INT | SACKS. TOTALS row at bottom.
+
+
+RUSHING. Columns: # | POS | PLAYER | CAR | YDS | YPC | TD | LONG. TOTALS row.
+
+
+RECEIVING. Columns: # | POS | PLAYER | TAR | REC | YDS | YPR | TD | LONG. TOTALS row.
+
+
+All stat text white.
+
+
+POS shown as color-coded badge:
+* QB= #9900ff background, #ffffff font
+* WR= #ff0000 background, #ffffff font
+* RB= #ff9900 background, #000000 font
+* TE= #ffff00 background, #000000 font
+
+
+Section 7 — Play by play:
+Fixed strip at bottom. Filter tabs: ALL PLAYS | SCORING PLAYS | Q1 | Q2 | Q3 | Q4. Active filter = green filled. Each row: timestamp left | play description white text. If the play involves a player the user has an active bet on, highlight that entire row with a dark green background and keep text white.
+
+
+Data source: ESPN unofficial API — all live. Polls every 5 seconds for new plays. If a new play is detected, refresh scores, stats, and active bets.
+
+
+BET ENTRY TAB:
+
+
+Header: "ACTIVE PARLAY" green left, P1-P10 dropdown + "+ NEW PARLAY" button right
+
+
+Left panel — BET INFO: BOOK dropdown (FanDuel default), STAKE input, BOOST % input
+
+
+Right panel — CALCULATIONS: LEGS count, PARLAY ODDS, BOOSTED ODDS, STAKE, TO WIN, PAYOUT (large green)
+
+
+Leg table below: GAME | TEAM | PLAYER | O/U | LINE | MARKET | ODDS | delete button
+"NO LEGS — CLICK + ADD LEG" placeholder when empty
+
+
+Bottom buttons: + ADD LEG (left), NEW PARLAY (center), SUBMIT PARLAY (right, green)
+
+
+Odds calculated from American odds input. Boost applied as percentage on top.
+
+
+All dropdowns populate from live ESPN data (games, teams, players)
+Markets list: ML, SPREAD, TOT, ATD, PS YDS, PS TD, COMP, PS ATT, INT, LNG PS, REC YDS, REC, TAR, LNG REC, T+A, SCK, INT REC, K PTS, EPM, FGM, 1TD, LTD, 1H SPD, 1H ML, 1H TOT, 2H SPD, 2H ML, 2H TOT, 1Q SPD, 1Q ML, 1Q TOT, 2Q SPD, 2Q ML, 2Q TOT, 3Q SPD, 3Q ML, 3Q TOT, 4Q SPD, 4Q ML, 4Q TOT, TM TOT
+Books list: FANDUEL, DRAFTKINGS, CAESARS, BET MGM, BET365, BALLY, BETR, COURTSIDE, DABBLE, DDC, FANATICS, HARD ROCK, ONYX, PICK 6, POLYMARKET, SCORE, SLEEPER, UNDERDOG, OTHER
+
+
+ACTIVE LEGS TAB:
+
+
+Refreshes every 30 seconds
+Each parlay gets a full-width header row: ID | LEGS | STATUS badge | BOOK | ODDS | BOOST | WAGER | TO WIN | ARCHIVE button
+
+
+Below each header, leg rows with columns: GAME | TEAM | PLAYER | O/U | LINE | MARKET | LIVE STAT | QUARTER | SCORE | STATUS
+
+
+Row colors: green background = tracking live, gold text = WON, red text = LOSS, default = white text
+
+
+ARCHIVE TAB:
+
+
+Table of settled parlays: PARLAY | BOOK | STAKE | BOOST | PARLAY ODDS | PAYOUT | DATE
+
+
+DATABASE: SQLite at /Users/chris/Hera\Data\hera.db
+Tables: parlays and legs
+The legs table column for leg status is called leg_status — not status.
+
+
+KEY RULES:
+
+
+Never open maximized — open at 1280x820, resizable, contents scale with window
+Every script prints version number on startup
+No placeholders or stub methods
+Bebas Neue on every single element
+Team logos load from /Users/chris/Hera\Script\{full-team-name}-logo.png — do not process or modify them, load with QPixmap directly
+All team colors come from the hex codes CSV — background hex and font hex
+The mockup HTML file (hera_mockup.html) is the pixel-match target for the Game Tracker tab
