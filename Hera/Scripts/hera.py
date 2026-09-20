@@ -22,14 +22,14 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QProgressBar, QSpacerItem
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QFont, QFontDatabase, QPixmap, QColor, QPalette, QPainter
+from PySide6.QtGui import QFont, QFontDatabase, QPixmap, QColor, QPalette, QPainter, QImage
 import re
 from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.2.1"
+VERSION = "4.2.2"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -657,18 +657,23 @@ class BootWorker(QThread):
             self.failed.emit(traceback.format_exc())
 
 
-def _tint_pixmap(pm, hex_color):
-    """Keep statue alpha; paint every opaque pixel as hex_color."""
+def _colorize_statue(pm, hex_color):
+    """Shift hue to hex_color but keep marble highlights, folds, and alpha."""
     if pm.isNull():
         return pm
-    out = QPixmap(pm.size())
-    out.fill(Qt.transparent)
-    p = QPainter(out)
-    p.drawPixmap(0, 0, pm)
-    p.setCompositionMode(QPainter.CompositionMode_SourceIn)
-    p.fillRect(out.rect(), QColor(hex_color))
-    p.end()
-    return out
+    img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
+    tgt = QColor(hex_color)
+    tr, tg, tb = tgt.red(), tgt.green(), tgt.blue()
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = QColor.fromRgba(img.pixel(x, y))
+            a = c.alpha()
+            if a == 0:
+                continue
+            lum = (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) / 255.0
+            lum = min(1.0, lum * 1.12)
+            img.setPixel(x, y, QColor(int(tr * lum), int(tg * lum), int(tb * lum), a).rgba())
+    return QPixmap.fromImage(img)
 
 
 class LoadingScreen(QWidget):
@@ -691,7 +696,7 @@ class LoadingScreen(QWidget):
         self._statue = QPixmap()
         src = LOGO_NOBG if os.path.exists(LOGO_NOBG) else LOGO_ORIG
         if os.path.exists(src):
-            self._statue = _tint_pixmap(QPixmap(src), self.HERA_HEX)
+            self._statue = _colorize_statue(QPixmap(src), self.HERA_HEX)
         self._worker = BootWorker()
         self._worker.progress.connect(self._on_boot_status)
         self._worker.finished_ok.connect(self._on_ready)
