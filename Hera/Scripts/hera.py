@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.21"
+VERSION = "4.3.22"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -815,53 +815,12 @@ def get_live_stat(summary, player_name, market, team_id, game=None,
     return "0"
 
 
-def _secs_left(game):
-    if not game:
-        return None
-    st = game.get("state") or ""
-    if st == "pre":
-        return 3600
-    if st == "post":
-        return 0
-    try:
-        p = int(game.get("period") or 1)
-    except Exception:
-        p = 1
-    clk = str(game.get("clock") or "0:00")
-    try:
-        parts = clk.replace(".", ":").split(":")
-        qleft = int(parts[0]) * 60 + int(float(parts[1]))
-    except Exception:
-        qleft = 0
-    if p <= 4:
-        return qleft + max(0, 4 - p) * 15 * 60
-    return qleft
-
-
-def _stamp_needs(label, game, market, done=False):
-    if done or not game or game.get("state") != "in":
-        return label
-    mk = (market or "").upper()
-    if mk in ("TOT", "TM TOT") or mk.endswith(" TOT"):
-        secs = int(_secs_left(game) or 0)
-        mm, ss = divmod(secs, 60)
-        return f"{label} · {mm}:{ss:02d} LEFT"
-    try:
-        p = int(game.get("period") or 0)
-    except Exception:
-        p = 0
-    clk = game.get("clock") or "0:00"
-    if p > 4:
-        return f"{label} · OT {clk}"
-    return f"{label} · Q{p} {clk}"
-
-
 def compute_needs(ou, line, live_val, game=None, status=None, market=None):
     """Remaining to strictly exceed (OVER) or remaining cushion (UNDER)."""
     if status == "WON":
-        return _stamp_needs("HIT", game, market, done=True)
+        return "HIT"
     if status == "LOST":
-        return _stamp_needs("DEAD", game, market, done=True)
+        return "DEAD"
     cur = _parse_cell(live_val)
     tgt = _parse_cell(line)
     if cur is None or tgt is None:
@@ -871,10 +830,9 @@ def compute_needs(ou, line, live_val, game=None, status=None, market=None):
     if ou_u == "OVER":
         if cur > tgt:
             return "HIT"
-        need = math.floor(tgt) + 1 - cur
         if state == "post":
             return "DEAD"
-        return _stamp_needs(_fmt_stat(max(0, need)), game, market)
+        return _fmt_stat(max(0, math.floor(tgt) + 1 - cur))
     if ou_u == "UNDER":
         if cur > tgt:
             return "DEAD"
@@ -883,7 +841,7 @@ def compute_needs(ou, line, live_val, game=None, status=None, market=None):
             cushion = 0
         if state == "post":
             return "HIT" if cur < tgt else "PUSH"
-        return _stamp_needs(_fmt_stat(cushion), game, market)
+        return _fmt_stat(cushion)
     return "—"
 
 
@@ -2785,7 +2743,6 @@ class GameTrackerTab(QWidget):
             self._legs_panel.set_game(str(game["id"]), self._games)
             self._legs_panel.refresh(
                 game, summary, data.get("away_ls"), data.get("home_ls"))
-            self._sync_combo_labels()
             self._load_stat_boxes(game, summary)
             bet_players = self._get_bet_players(game["id"])
             self.game_updated.emit(
@@ -2795,29 +2752,6 @@ class GameTrackerTab(QWidget):
         pending = self._fetch.take_pending()
         if pending:
             self._fetch.fetch(*pending)
-
-    def _sync_combo_labels(self):
-        if not self._games:
-            return
-        view = self._combo.view()
-        if view is not None and view.isVisible():
-            return
-        gid = str((self._current or {}).get("id", ""))
-        self._combo.blockSignals(True)
-        self._combo.clear()
-        sel = 0
-        for i, g in enumerate(self._games):
-            if g["state"] == "in":
-                suffix = f" — Q{g['period']} {g['clock']}"
-            elif g["state"] == "post":
-                suffix = " — FINAL"
-            else:
-                suffix = f" — {et_to_pt(g.get('detail', ''))}"
-            self._combo.addItem(f"{g['away']['abbr']} @ {g['home']['abbr']}{suffix}")
-            if str(g["id"]) == gid:
-                sel = i
-        self._combo.setCurrentIndex(sel)
-        self._combo.blockSignals(False)
 
     def _poll(self):
         if not self._current:
@@ -3828,7 +3762,7 @@ class ActiveLegsTab(QWidget):
         self._build()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
-        self._timer.setInterval(3000)
+        self._timer.setInterval(30000)
         self._timer.start()
 
     def _build(self):
@@ -3961,10 +3895,10 @@ class ActiveLegsTab(QWidget):
         hl.addWidget(sb)
         bl.addWidget(hdr)
 
-        tbl = QTableWidget(len(legs), 11)
+        tbl = QTableWidget(len(legs), 10)
         tbl.setHorizontalHeaderLabels(
             ["GAME", "TEAM", "PLAYER", "O/U", "LINE", "MARKET",
-             "CURRENT", "NEEDS", "QUARTER", "SCORE", "STATUS"])
+             "LIVE STAT", "QUARTER", "SCORE", "STATUS"])
         tbl.verticalHeader().setVisible(False)
         tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         tbl.setSelectionMode(QTableWidget.NoSelection)
@@ -3988,9 +3922,7 @@ class ActiveLegsTab(QWidget):
             quarter = "—"
             score = "—"
             live_val = live_stat or "—"
-            needs = "—"
             is_tracking = False
-            gi_state = ""
 
             if gi:
                 p = gi.get("period", 0)
@@ -3998,7 +3930,6 @@ class ActiveLegsTab(QWidget):
                     quarter = f"Q{p}"
                 score = f"{gi['away']['score']}-{gi['home']['score']}"
                 is_tracking = gi.get("state") == "in"
-                gi_state = gi.get("state", "")
                 pack = self._scache.get(str(game_id)) or {}
                 if not isinstance(pack, dict):
                     pack = {"summary": pack}
@@ -4016,12 +3947,10 @@ class ActiveLegsTab(QWidget):
                     away_ls=away_ls, home_ls=home_ls, team_abbr=team or "")
                 if v != "—":
                     live_val = v
-                new_status = settle_leg(ou, line, live_val, gi_state, leg_status)
+                new_status = settle_leg(ou, line, live_val, gi.get("state", ""), leg_status)
                 if live_val != (live_stat or "—") or new_status != leg_status:
                     persist_leg_live(lid, live_val, new_status)
                     leg_status = new_status
-                needs = compute_needs(
-                    ou, line, live_val, game=gi, status=leg_status, market=market)
 
             is_won = leg_status == "WON"
             is_lost = leg_status == "LOST"
@@ -4032,7 +3961,7 @@ class ActiveLegsTab(QWidget):
                   "LIVE" if is_tracking else "PENDING")
 
             vals = [gd, team or "—", player or "—", ou or "—", line or "—",
-                    market or "—", str(live_val), str(needs), quarter, score, st]
+                    market or "—", str(live_val), quarter, score, st]
 
             for col, val in enumerate(vals):
                 it = QTableWidgetItem(str(val))
@@ -4046,12 +3975,12 @@ class ActiveLegsTab(QWidget):
                     it.setBackground(QColor(rbg))
                     if col == 0 and is_tracking:
                         it.setForeground(QColor(GREEN))
-                    elif col == 10:
+                    elif col == 9:
                         it.setForeground(QColor(
                             GOLD if is_won else
                             RED if is_lost else
                             GREEN if is_tracking else TEXT_DIM))
-                    elif col in (6, 7, 8, 9) and is_tracking:
+                    elif col in (6, 7, 8) and is_tracking:
                         it.setForeground(QColor(GREEN))
                     else:
                         it.setForeground(QColor(TEXT))
@@ -4277,8 +4206,6 @@ class HeraWindow(QMainWindow):
                 "home_ls": home_ls,
             }
         self._al.sync_games(self._gt._games)
-        if self._stack.currentIndex() == 3:
-            self._al.refresh()
 
     def _switch(self, idx):
         self._stack.setCurrentIndex(idx)
