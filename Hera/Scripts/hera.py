@@ -8,10 +8,12 @@ multiprocessing.freeze_support()
 
 import sys
 import os
+import math
 import sqlite3
 import requests
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
 from PySide6.QtWidgets import (
@@ -30,7 +32,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.20"
+VERSION = "4.3.21"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -187,25 +189,59 @@ MARKETS = [
 ]
 
 MARKET_STAT_MAP = {
-    "PS YDS": "passingYards",
-    "PS TD": "passingTouchdowns",
-    "COMP": "completions",
-    "PS ATT": "attempts",
-    "INT": "interceptions",
-    "LNG PS": "longPassingYards",
-    "REC YDS": "receivingYards",
-    "REC": "receptions",
-    "TAR": "receivingTargets",
-    "LNG REC": "longReception",
-    "RSH ATT": "rushingAttempts",
-    "RSH YDS": "rushingYards",
-    "SCK": "sacks",
-    "T+A": "totalTackles",
-    "INT REC": "interceptions",
-    "K PTS": "kickingPoints",
-    "FGM": "fieldGoalsMade",
-    "EPM": "extraPointsMade",
+    "PS YDS": {"keys": ("passingYards",)},
+    "PS TD": {"keys": ("passingTouchdowns",)},
+    "COMP": {"keys": ("completions", "completions/passingAttempts"), "slash": "left"},
+    "PS ATT": {"keys": ("attempts", "passingAttempts", "completions/passingAttempts"), "slash": "right"},
+    "INT": {"keys": ("interceptions",), "group": "passing"},
+    "LNG PS": {"keys": ("longPassingYards", "longPassing")},
+    "REC YDS": {"keys": ("receivingYards",)},
+    "REC": {"keys": ("receptions",)},
+    "TAR": {"keys": ("receivingTargets",)},
+    "LNG REC": {"keys": ("longReception",)},
+    "RSH ATT": {"keys": ("rushingAttempts",)},
+    "RSH YDS": {"keys": ("rushingYards",)},
+    "SCK": {"keys": ("sacks",), "group": "defensive"},
+    "T+A": {"keys": ("totalTackles",)},
+    "INT REC": {"keys": ("interceptions",), "group": "interceptions"},
+    "K PTS": {"keys": ("kickingPoints", "totalKickingPoints")},
+    "FGM": {"keys": ("fieldGoalsMade", "fieldGoalsMade/fieldGoalAttempts"), "slash": "left"},
+    "EPM": {"keys": ("extraPointsMade", "extraPointsMade/extraPointAttempts"), "slash": "left"},
+    "ATD": {
+        "keys": (
+            "rushingTouchdowns", "receivingTouchdowns",
+            "kickReturnTouchdowns", "puntReturnTouchdowns",
+            "defensiveTouchdowns", "interceptionTouchdowns",
+        ),
+        "sum": True,
+    },
+    "1TD": {
+        "keys": (
+            "rushingTouchdowns", "receivingTouchdowns",
+            "kickReturnTouchdowns", "puntReturnTouchdowns",
+            "defensiveTouchdowns", "interceptionTouchdowns",
+        ),
+        "sum": True,
+    },
+    "LTD": {
+        "keys": (
+            "rushingTouchdowns", "receivingTouchdowns",
+            "kickReturnTouchdowns", "puntReturnTouchdowns",
+            "defensiveTouchdowns", "interceptionTouchdowns",
+        ),
+        "sum": True,
+    },
 }
+
+PERIOD_MARKETS = {
+    "1Q TOT": (1,), "2Q TOT": (2,), "3Q TOT": (3,), "4Q TOT": (4,),
+    "1H TOT": (1, 2), "2H TOT": (3, 4),
+    "1Q SPD": (1,), "2Q SPD": (2,), "3Q SPD": (3,), "4Q SPD": (4,),
+    "1H SPD": (1, 2), "2H SPD": (3, 4),
+    "1Q ML": (1,), "2Q ML": (2,), "3Q ML": (3,), "4Q ML": (4,),
+    "1H ML": (1, 2), "2H ML": (3, 4),
+}
+TEAM_SCORE_MARKETS = {"ML", "SPREAD", "TOT", "TM TOT"} | set(PERIOD_MARKETS)
 
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 ESPN_SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary"
@@ -380,12 +416,17 @@ def db():
 # ESPN HELPERS
 # ─────────────────────────────────────────────
 def espn_get(url, params=None):
-    try:
-        r = requests.get(url, params=params, timeout=4)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
+    """ESPN unofficial APIs. Do not send a browser UA — Akamai 403s those on summary."""
+    for attempt in range(3):
+        try:
+            r = requests.get(url, params=params, timeout=6)
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            if attempt == 2:
+                return None
+            time.sleep(0.2 * (attempt + 1))
+    return None
 
 
 def fetch_scoreboard(week=None, seasontype=2):
@@ -449,7 +490,20 @@ def fetch_scoreboard(week=None, seasontype=2):
 
 
 def fetch_summary(game_id):
-    return espn_get(ESPN_SUMMARY, params={"event": game_id})
+    data = espn_get(ESPN_SUMMARY, params={"event": game_id})
+    if data:
+        return data
+    data = espn_get(
+        "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/summary",
+        params={"event": game_id})
+    if data:
+        return data
+    wrap = espn_get(
+        "https://cdn.espn.com/core/nfl/boxscore",
+        params={"xhr": 1, "gameId": game_id})
+    if isinstance(wrap, dict):
+        return wrap.get("gamepackageJSON") or wrap
+    return None
 
 
 def fetch_linescores(game_id, team_id):
@@ -549,56 +603,297 @@ def _parse_roster_entries(entries):
     return [p for p in players if p["name"]]
 
 
+_NAME_SUFFIX = re.compile(r"\b(jr|sr|ii|iii|iv|v)[.]?$", re.I)
+
+
+def _norm_name_parts(name):
+    n = (name or "").lower().replace(".", " ").replace("'", "")
+    n = n.replace("-", " ")
+    n = _NAME_SUFFIX.sub("", n).strip()
+    return [p for p in n.split() if p]
+
+
 def _name_match(player_name, athlete_name):
     if not player_name or not athlete_name:
         return False
-    a = player_name.lower().strip()
-    b = athlete_name.lower().strip()
-    if a in b or b in a:
+    a = _norm_name_parts(player_name)
+    b = _norm_name_parts(athlete_name)
+    if not a or not b:
+        return False
+    if a == b:
         return True
-    a_parts = a.split()
-    b_parts = b.split()
-    return bool(a_parts and b_parts and a_parts[-1] == b_parts[-1] and len(a_parts[-1]) > 2)
+    sa, sb = " ".join(a), " ".join(b)
+    if sa in sb or sb in sa:
+        return True
+    if a[-1] != b[-1] or len(a[-1]) <= 2:
+        return False
+    if len(a) == 1:
+        return True
+    return a[0][0] == b[0][0]
 
 
-def get_live_stat(summary, player_name, market, team_id):
-    if not summary or not player_name or market not in MARKET_STAT_MAP:
+def _parse_cell(raw, slash=""):
+    if raw in (None, ""):
+        return None
+    s = str(raw).strip().replace(",", "")
+    if "/" in s:
+        left, right, *_rest = s.split("/")
+        s = right if slash == "right" else left
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _fmt_stat(n):
+    if n is None:
         return "—"
-    stat_key = MARKET_STAT_MAP[market]
+    try:
+        x = float(n)
+    except Exception:
+        return str(n)
+    if abs(x - round(x)) < 1e-9:
+        return str(int(round(x)))
+    return str(round(x, 1))
+
+
+def _fscore(x):
+    try:
+        return float(str(x).replace(",", "") or 0)
+    except Exception:
+        return 0.0
+
+
+def _ls_period(ls, period):
+    if not ls:
+        return 0.0
+    v = ls.get(int(period))
+    if v in (None, "—", ""):
+        return 0.0
+    return _fscore(v)
+
+
+def _ls_range(ls, periods):
+    return sum(_ls_period(ls, p) for p in periods)
+
+
+def _team_market_stat(market, game, team_abbr, away_ls, home_ls):
+    if market not in TEAM_SCORE_MARKETS or not game:
+        return None
+    away = game.get("away") or {}
+    home = game.get("home") or {}
+    ascore, hscore = _fscore(away.get("score")), _fscore(home.get("score"))
+    is_away = team_abbr == away.get("abbr")
+    is_home = team_abbr == home.get("abbr")
+    if market == "TOT":
+        return ascore + hscore
+    if market == "TM TOT":
+        if is_away:
+            return ascore
+        if is_home:
+            return hscore
+        return None
+    if market == "ML":
+        if is_away:
+            return ascore
+        if is_home:
+            return hscore
+        return None
+    if market == "SPREAD":
+        if is_away:
+            return ascore - hscore
+        if is_home:
+            return hscore - ascore
+        return None
+    pers = PERIOD_MARKETS.get(market)
+    if not pers:
+        return None
+    a = _ls_range(away_ls, pers)
+    h = _ls_range(home_ls, pers)
+    if market.endswith("TOT"):
+        return a + h
+    if not (is_away or is_home):
+        return None
+    ts, os_ = (a, h) if is_away else (h, a)
+    if market.endswith("ML"):
+        return ts
+    return ts - os_
+
+
+def _read_wanted(keys, stats, wanted, slash=""):
+    for wk in wanted:
+        raw = None
+        use_slash = slash
+        if wk in keys:
+            i = keys.index(wk)
+            raw = stats[i] if i < len(stats) else None
+            if "/" in wk and not slash:
+                use_slash = "right" if wk.split("/")[-1] in (
+                    "passingAttempts", "fieldGoalAttempts", "extraPointAttempts") else "left"
+        else:
+            for i, k in enumerate(keys):
+                parts = str(k).split("/")
+                if wk not in parts:
+                    continue
+                raw = stats[i] if i < len(stats) else None
+                use_slash = "left" if parts[0] == wk else "right"
+                break
+        val = _parse_cell(raw, use_slash if raw is not None and "/" in str(raw) else "")
+        if val is not None:
+            return val
+    return None
+
+
+def _scan_player_stat(summary, player_name, spec, team_id):
+    wanted = spec.get("keys") or ()
+    slash = spec.get("slash") or ""
+    hint = (spec.get("group") or "").lower()
+    do_sum = bool(spec.get("sum"))
     blocks = (summary.get("boxscore") or {}).get("players") or []
 
+    def group_ok(group):
+        if not hint:
+            return True
+        return (group.get("name") or "").lower().startswith(hint)
+
     def scan(require_team):
+        total = 0.0
+        any_hit = False
+        matched = False
         for block in blocks:
             bid = str((block.get("team") or {}).get("id", ""))
             if require_team and team_id and bid != str(team_id):
                 continue
             for group in block.get("statistics") or []:
-                keys = group.get("keys") or []
-                if stat_key not in keys:
+                if not group_ok(group):
                     continue
-                idx = keys.index(stat_key)
+                keys = group.get("keys") or []
                 for ath in group.get("athletes") or []:
                     name = (ath.get("athlete") or {}).get("displayName", "")
-                    if _name_match(player_name, name):
-                        stats = ath.get("stats") or []
-                        if idx < len(stats) and stats[idx] not in (None, ""):
-                            return str(stats[idx])
-        return None
+                    if not _name_match(player_name, name):
+                        continue
+                    matched = True
+                    stats = ath.get("stats") or []
+                    val = _read_wanted(keys, stats, wanted, slash)
+                    if val is None:
+                        continue
+                    if do_sum:
+                        total += val
+                        any_hit = True
+                    else:
+                        return val, True
+        if do_sum and any_hit:
+            return total, True
+        return None, matched
 
-    hit = scan(True)
-    if hit is None:
-        hit = scan(False)
-    return hit if hit is not None else "—"
+    v, matched = scan(True)
+    if v is None:
+        v2, m2 = scan(False)
+        v, matched = v2, matched or m2
+    return v, matched, bool(blocks)
+
+
+def get_live_stat(summary, player_name, market, team_id, game=None,
+                  away_ls=None, home_ls=None, team_abbr=""):
+    market_u = (market or "").upper().strip()
+    team_val = _team_market_stat(market_u, game, team_abbr, away_ls, home_ls)
+    if team_val is not None:
+        return _fmt_stat(team_val)
+    spec = MARKET_STAT_MAP.get(market_u)
+    if not spec:
+        return "—"
+    state = (game or {}).get("state") or ""
+    if not player_name or player_name in ("N/A", "—"):
+        return "0" if state != "post" else "—"
+    v = matched = has_blocks = None
+    if summary:
+        v, matched, has_blocks = _scan_player_stat(summary, player_name, spec, team_id)
+    if v is not None:
+        return _fmt_stat(v)
+    if state == "post" and has_blocks and not matched:
+        return "—"
+    return "0"
+
+
+def _secs_left(game):
+    if not game:
+        return None
+    st = game.get("state") or ""
+    if st == "pre":
+        return 3600
+    if st == "post":
+        return 0
+    try:
+        p = int(game.get("period") or 1)
+    except Exception:
+        p = 1
+    clk = str(game.get("clock") or "0:00")
+    try:
+        parts = clk.replace(".", ":").split(":")
+        qleft = int(parts[0]) * 60 + int(float(parts[1]))
+    except Exception:
+        qleft = 0
+    if p <= 4:
+        return qleft + max(0, 4 - p) * 15 * 60
+    return qleft
+
+
+def _stamp_needs(label, game, market, done=False):
+    if done or not game or game.get("state") != "in":
+        return label
+    mk = (market or "").upper()
+    if mk in ("TOT", "TM TOT") or mk.endswith(" TOT"):
+        secs = int(_secs_left(game) or 0)
+        mm, ss = divmod(secs, 60)
+        return f"{label} · {mm}:{ss:02d} LEFT"
+    try:
+        p = int(game.get("period") or 0)
+    except Exception:
+        p = 0
+    clk = game.get("clock") or "0:00"
+    if p > 4:
+        return f"{label} · OT {clk}"
+    return f"{label} · Q{p} {clk}"
+
+
+def compute_needs(ou, line, live_val, game=None, status=None, market=None):
+    """Remaining to strictly exceed (OVER) or remaining cushion (UNDER)."""
+    if status == "WON":
+        return _stamp_needs("HIT", game, market, done=True)
+    if status == "LOST":
+        return _stamp_needs("DEAD", game, market, done=True)
+    cur = _parse_cell(live_val)
+    tgt = _parse_cell(line)
+    if cur is None or tgt is None:
+        return "—"
+    ou_u = (ou or "").upper()
+    state = (game or {}).get("state") or ""
+    if ou_u == "OVER":
+        if cur > tgt:
+            return "HIT"
+        need = math.floor(tgt) + 1 - cur
+        if state == "post":
+            return "DEAD"
+        return _stamp_needs(_fmt_stat(max(0, need)), game, market)
+    if ou_u == "UNDER":
+        if cur > tgt:
+            return "DEAD"
+        cushion = math.floor(tgt) - cur
+        if cushion < 0:
+            cushion = 0
+        if state == "post":
+            return "HIT" if cur < tgt else "PUSH"
+        return _stamp_needs(_fmt_stat(cushion), game, market)
+    return "—"
 
 
 def settle_leg(ou, line, live_val, game_state, current_status):
     """Return WON / LOST / existing status from live stat vs line."""
     if current_status in ("WON", "LOST"):
         return current_status
-    try:
-        cur = float(str(live_val).replace(",", ""))
-        tgt = float(str(line).replace(",", ""))
-    except Exception:
+    cur = _parse_cell(live_val)
+    tgt = _parse_cell(line)
+    if cur is None or tgt is None:
         return current_status or "PENDING"
     ou_u = (ou or "").upper()
     if ou_u == "OVER":
@@ -1630,7 +1925,7 @@ class ActiveBetsPanel(QWidget):
         self._game_id = game_id
         self._games = games
 
-    def refresh(self, game=None, summary=None):
+    def refresh(self, game=None, summary=None, away_ls=None, home_ls=None):
         if not self._game_id:
             return
 
@@ -1668,9 +1963,8 @@ class ActiveBetsPanel(QWidget):
         for r, leg in enumerate(legs):
             lid, plabel, book, team, player, market, ou, line, odds, live_stat, leg_status = leg
 
-            # Pull live stat value
             live_val = live_stat or "—"
-            if summary and player and game:
+            if game:
                 away = game.get("away") or {}
                 home = game.get("home") or {}
                 if team == away.get("abbr"):
@@ -1679,7 +1973,9 @@ class ActiveBetsPanel(QWidget):
                     tid = home.get("id")
                 else:
                     tid = ""
-                v = get_live_stat(summary, player, market, tid)
+                v = get_live_stat(
+                    summary, player, market, tid, game=game,
+                    away_ls=away_ls, home_ls=home_ls, team_abbr=team or "")
                 if v != "—":
                     live_val = v
             state = (game or {}).get("state", "")
@@ -1688,17 +1984,8 @@ class ActiveBetsPanel(QWidget):
                 persist_leg_live(lid, live_val, new_status)
                 leg_status = new_status
 
-            # Calculate "NEEDS" (remaining to hit the line)
-            needs = "—"
-            try:
-                cur = float(str(live_val).replace(",", ""))
-                tgt = float(str(line).replace(",", ""))
-                if (ou or "").upper() == "OVER":
-                    needs = str(max(0, round(tgt - cur + 0.5, 1)))
-                elif (ou or "").upper() == "UNDER":
-                    needs = str(max(0, round(tgt - cur, 1))) if cur <= tgt else "0"
-            except Exception:
-                pass
+            needs = compute_needs(
+                ou, line, live_val, game=game, status=leg_status, market=market)
 
             is_won = leg_status == "WON"
             is_lost = leg_status == "LOST"
@@ -2248,17 +2535,33 @@ class GameFetchWorker(QThread):
         game, week = self._game, self._week
         if not game:
             return
+        gid = game["id"]
+
+        def _call(fn, *a, **k):
+            try:
+                return fn(*a, **k)
+            except Exception:
+                traceback.print_exc()
+                return None
+
         try:
-            plays = fetch_plays(game["id"]) or []
-            summary = fetch_summary(game["id"])
-            fresh, _ = fetch_scoreboard(week=week)
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                f_plays = ex.submit(_call, fetch_plays, gid)
+                f_sum = ex.submit(_call, fetch_summary, gid)
+                f_sb = ex.submit(_call, fetch_scoreboard, week)
+                f_als = ex.submit(_call, fetch_linescores, gid, game["away"]["id"])
+                f_hls = ex.submit(_call, fetch_linescores, gid, game["home"]["id"])
+                plays = f_plays.result() or []
+                summary = f_sum.result()
+                board = f_sb.result()
+                fresh, _wk = board if board else ([], None)
+                away_ls = f_als.result() or {}
+                home_ls = f_hls.result() or {}
             current = game
             for g in (fresh or []):
                 if str(g.get("id")) == str(game.get("id")):
                     current = g
                     break
-            away_ls = fetch_linescores(current["id"], current["away"]["id"])
-            home_ls = fetch_linescores(current["id"], current["home"]["id"])
             self.bundle.emit({
                 "game": current,
                 "summary": summary,
@@ -2295,7 +2598,7 @@ class GameTrackerTab(QWidget):
         self._fetch.bundle.connect(self._apply_bundle)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
-        self._timer.setInterval(5000)
+        self._timer.setInterval(3000)
 
     def _build(self):
         outer = QVBoxLayout(self)
@@ -2480,7 +2783,9 @@ class GameTrackerTab(QWidget):
             self._boxscore.refresh(game, data.get("away_ls"), data.get("home_ls"))
             self._winprob.refresh(game, summary)
             self._legs_panel.set_game(str(game["id"]), self._games)
-            self._legs_panel.refresh(game, summary)
+            self._legs_panel.refresh(
+                game, summary, data.get("away_ls"), data.get("home_ls"))
+            self._sync_combo_labels()
             self._load_stat_boxes(game, summary)
             bet_players = self._get_bet_players(game["id"])
             self.game_updated.emit(
@@ -2490,6 +2795,29 @@ class GameTrackerTab(QWidget):
         pending = self._fetch.take_pending()
         if pending:
             self._fetch.fetch(*pending)
+
+    def _sync_combo_labels(self):
+        if not self._games:
+            return
+        view = self._combo.view()
+        if view is not None and view.isVisible():
+            return
+        gid = str((self._current or {}).get("id", ""))
+        self._combo.blockSignals(True)
+        self._combo.clear()
+        sel = 0
+        for i, g in enumerate(self._games):
+            if g["state"] == "in":
+                suffix = f" — Q{g['period']} {g['clock']}"
+            elif g["state"] == "post":
+                suffix = " — FINAL"
+            else:
+                suffix = f" — {et_to_pt(g.get('detail', ''))}"
+            self._combo.addItem(f"{g['away']['abbr']} @ {g['home']['abbr']}{suffix}")
+            if str(g["id"]) == gid:
+                sel = i
+        self._combo.setCurrentIndex(sel)
+        self._combo.blockSignals(False)
 
     def _poll(self):
         if not self._current:
@@ -3500,7 +3828,7 @@ class ActiveLegsTab(QWidget):
         self._build()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
-        self._timer.setInterval(30000)
+        self._timer.setInterval(3000)
         self._timer.start()
 
     def _build(self):
@@ -3633,10 +3961,10 @@ class ActiveLegsTab(QWidget):
         hl.addWidget(sb)
         bl.addWidget(hdr)
 
-        tbl = QTableWidget(len(legs), 10)
+        tbl = QTableWidget(len(legs), 11)
         tbl.setHorizontalHeaderLabels(
             ["GAME", "TEAM", "PLAYER", "O/U", "LINE", "MARKET",
-             "LIVE STAT", "QUARTER", "SCORE", "STATUS"])
+             "CURRENT", "NEEDS", "QUARTER", "SCORE", "STATUS"])
         tbl.verticalHeader().setVisible(False)
         tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         tbl.setSelectionMode(QTableWidget.NoSelection)
@@ -3660,7 +3988,9 @@ class ActiveLegsTab(QWidget):
             quarter = "—"
             score = "—"
             live_val = live_stat or "—"
+            needs = "—"
             is_tracking = False
+            gi_state = ""
 
             if gi:
                 p = gi.get("period", 0)
@@ -3668,21 +3998,30 @@ class ActiveLegsTab(QWidget):
                     quarter = f"Q{p}"
                 score = f"{gi['away']['score']}-{gi['home']['score']}"
                 is_tracking = gi.get("state") == "in"
-                s = self._scache.get(str(game_id))
-                if s and player and player != "N/A":
-                    if team == gi["away"]["abbr"]:
-                        tid = gi["away"]["id"]
-                    elif team == gi["home"]["abbr"]:
-                        tid = gi["home"]["id"]
-                    else:
-                        tid = ""
-                    v = get_live_stat(s, player, market, tid)
-                    if v != "—":
-                        live_val = v
-                    new_status = settle_leg(ou, line, live_val, gi.get("state", ""), leg_status)
-                    if live_val != (live_stat or "—") or new_status != leg_status:
-                        persist_leg_live(lid, live_val, new_status)
-                        leg_status = new_status
+                gi_state = gi.get("state", "")
+                pack = self._scache.get(str(game_id)) or {}
+                if not isinstance(pack, dict):
+                    pack = {"summary": pack}
+                s = pack.get("summary")
+                away_ls = pack.get("away_ls")
+                home_ls = pack.get("home_ls")
+                if team == gi["away"]["abbr"]:
+                    tid = gi["away"]["id"]
+                elif team == gi["home"]["abbr"]:
+                    tid = gi["home"]["id"]
+                else:
+                    tid = ""
+                v = get_live_stat(
+                    s, player, market, tid, game=gi,
+                    away_ls=away_ls, home_ls=home_ls, team_abbr=team or "")
+                if v != "—":
+                    live_val = v
+                new_status = settle_leg(ou, line, live_val, gi_state, leg_status)
+                if live_val != (live_stat or "—") or new_status != leg_status:
+                    persist_leg_live(lid, live_val, new_status)
+                    leg_status = new_status
+                needs = compute_needs(
+                    ou, line, live_val, game=gi, status=leg_status, market=market)
 
             is_won = leg_status == "WON"
             is_lost = leg_status == "LOST"
@@ -3693,7 +4032,7 @@ class ActiveLegsTab(QWidget):
                   "LIVE" if is_tracking else "PENDING")
 
             vals = [gd, team or "—", player or "—", ou or "—", line or "—",
-                    market or "—", str(live_val), quarter, score, st]
+                    market or "—", str(live_val), str(needs), quarter, score, st]
 
             for col, val in enumerate(vals):
                 it = QTableWidgetItem(str(val))
@@ -3707,12 +4046,12 @@ class ActiveLegsTab(QWidget):
                     it.setBackground(QColor(rbg))
                     if col == 0 and is_tracking:
                         it.setForeground(QColor(GREEN))
-                    elif col == 9:
+                    elif col == 10:
                         it.setForeground(QColor(
                             GOLD if is_won else
                             RED if is_lost else
                             GREEN if is_tracking else TEXT_DIM))
-                    elif col in (6, 7, 8) and is_tracking:
+                    elif col in (6, 7, 8, 9) and is_tracking:
                         it.setForeground(QColor(GREEN))
                     else:
                         it.setForeground(QColor(TEXT))
@@ -3931,9 +4270,15 @@ class HeraWindow(QMainWindow):
         self._al.set_games(games)
 
     def _on_tracker_update(self, game, summary, plays, away_ls, home_ls, bet_players):
-        if game and summary:
-            self._al._scache[str(game["id"])] = summary
+        if game:
+            self._al._scache[str(game["id"])] = {
+                "summary": summary,
+                "away_ls": away_ls,
+                "home_ls": home_ls,
+            }
         self._al.sync_games(self._gt._games)
+        if self._stack.currentIndex() == 3:
+            self._al.refresh()
 
     def _switch(self, idx):
         self._stack.setCurrentIndex(idx)
