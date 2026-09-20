@@ -23,14 +23,14 @@ from PySide6.QtWidgets import (
     QStyle, QStyleOptionComboBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent
-from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QPixmap, QColor, QPalette, QPainter, QImage
+from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QPixmap, QColor, QPalette, QPainter, QImage, QBrush
 import re
 from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.15"
+VERSION = "4.3.16"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -93,18 +93,42 @@ def colors_for_team(team):
     return TEAM_COLORS.get(t) or TEAM_COLORS.get(t.upper()) or TEAM_COLORS.get(t.lower())
 
 
-def paint_leg_row(tbl, row_idx, ncols, team):
-    """Paint every cell in a leg row with that team's CSV background and font."""
-    pair = colors_for_team(team)
-    if not pair:
-        return
-    bg, fg = QColor(pair[0]), QColor(pair[1])
-    for c in range(ncols):
-        it = tbl.item(row_idx, c)
-        if it is None:
-            continue
-        it.setBackground(bg)
-        it.setForeground(fg)
+def tracking_table_ss():
+    """Item backgrounds come from the delegate (team CSV colors), not CSS."""
+    return (f"QTableWidget{{background:{CARD};color:{TEXT};border:none;"
+            f"gridline-color:{BORDER2};outline:none;}}"
+            f"QHeaderView::section{{background:{HDR_BG};color:{TEXT_MID};border:none;"
+            f"border-bottom:0.5px solid {BORDER2};padding:4px 8px;font-size:10px;letter-spacing:2px;}}"
+            f"QScrollBar:vertical{{background:{BG};width:5px;border:none;}}"
+            f"QScrollBar::handle:vertical{{background:{BORDER};border-radius:2px;}}")
+
+
+class _TeamRowDelegate(QStyledItemDelegate):
+    """Paints full-row team colors on Active Legs and Game Tracker tables only."""
+
+    def paint(self, painter, option, index):
+        bg = index.data(Qt.BackgroundRole)
+        fg = index.data(Qt.ForegroundRole)
+        fill = None
+        if isinstance(bg, QBrush) and bg.style() != Qt.NoBrush:
+            fill = bg.color()
+        elif isinstance(bg, QColor) and bg.isValid():
+            fill = bg
+        painter.save()
+        if fill is not None and fill.alpha() > 0:
+            painter.fillRect(option.rect, fill)
+        text = index.data(Qt.DisplayRole)
+        if text is None:
+            text = ""
+        pen = QColor(TEXT)
+        if isinstance(fg, QBrush):
+            pen = fg.color()
+        elif isinstance(fg, QColor) and fg.isValid():
+            pen = fg
+        painter.setPen(pen)
+        painter.setFont(index.data(Qt.FontRole) or option.font)
+        painter.drawText(option.rect, Qt.AlignCenter | Qt.TextSingleLine, str(text))
+        painter.restore()
 
 # ─────────────────────────────────────────────
 # COLORS
@@ -1585,7 +1609,8 @@ class ActiveBetsPanel(QWidget):
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         self._tbl.setSelectionMode(QTableWidget.NoSelection)
-        self._tbl.setStyleSheet(table_ss())
+        self._tbl.setStyleSheet(tracking_table_ss())
+        self._tbl.setItemDelegate(_TeamRowDelegate(self._tbl))
         self._tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._tbl.setShowGrid(False)
         lay.addWidget(self._tbl)
@@ -3513,7 +3538,8 @@ class ActiveLegsTab(QWidget):
         tbl.verticalHeader().setVisible(False)
         tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         tbl.setSelectionMode(QTableWidget.NoSelection)
-        tbl.setStyleSheet(table_ss())
+        tbl.setStyleSheet(tracking_table_ss())
+        tbl.setItemDelegate(_TeamRowDelegate(tbl))
         tbl.setShowGrid(False)
         tbl.setFrameShape(QFrame.NoFrame)
         tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
