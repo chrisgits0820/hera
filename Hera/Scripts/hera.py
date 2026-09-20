@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.14"
+VERSION = "4.3.15"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2901,7 +2901,7 @@ class BetEntryTab(QWidget):
 
     def _cell_combo(self, items, min_chars=8):
         c = _CenterCombo()
-        c.setFont(bb(10))
+        c.setFont(bb(8))
         c.setStyleSheet(combo_ss(center=True))
         c.setMinimumHeight(28)
         c.setMaxVisibleItems(18)
@@ -2916,7 +2916,7 @@ class BetEntryTab(QWidget):
 
     def _cell_input(self, placeholder, text=""):
         e = QLineEdit(text)
-        e.setFont(bb(10))
+        e.setFont(bb(8))
         e.setStyleSheet(input_ss())
         e.setMinimumHeight(28)
         e.setAlignment(Qt.AlignCenter)
@@ -2940,7 +2940,7 @@ class BetEntryTab(QWidget):
         if not hasattr(self, "_lt"):
             return
         hdr = self._lt.horizontalHeader()
-        fm = QFontMetrics(bb(10))
+        fm = QFontMetrics(bb(8))
         pad = 40
         mins = [
             fm.horizontalAdvance("WWW @ WWW") + pad,
