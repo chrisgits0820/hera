@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QComboBox, QStackedWidget,
     QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
     QGridLayout, QLineEdit, QFrame, QSizePolicy, QDialog,
-    QDialogButtonBox, QProgressBar, QSpacerItem
+    QDialogButtonBox, QProgressBar, QSpacerItem, QStyledItemDelegate
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent
 from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QPixmap, QColor, QPalette, QPainter, QImage
@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.12"
+VERSION = "4.3.13"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -198,15 +198,14 @@ def card_ss(r=0):
 
 
 def combo_ss(center=False):
-    pad = "2px 18px 2px 6px" if center else "2px 6px"
     ss = (f"QComboBox{{background:#2a2a2a;color:#ffffff;border:0.5px solid #444;"
-          f"border-radius:0px;padding:{pad};}}"
+          f"border-radius:0px;padding:2px 6px;}}"
           f"QComboBox::drop-down{{border:none;width:14px;}}"
           f"QComboBox QAbstractItemView{{background:#2a2a2a;color:#ffffff;"
           f"border:1px solid {BORDER};selection-background-color:{GREEN_DIM};}}")
     if center:
         ss += ("QComboBox QLineEdit{background:transparent;color:#ffffff;border:none;"
-               "padding:0px;}")
+               "padding:0px;qproperty-alignment:AlignCenter;}")
     return ss
 
 
@@ -2638,19 +2637,27 @@ class AddLegDialog(QDialog):
 # ─────────────────────────────────────────────
 # BET ENTRY TAB
 # ─────────────────────────────────────────────
+class _CenterAlignDelegate(QStyledItemDelegate):
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        option.displayAlignment = Qt.AlignCenter
+
+
 class _CenterCombo(QComboBox):
-    """Leg-cell combo: centered closed text, popup still a normal list."""
+    """Closed text and popup rows are centered. Click still opens the list."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setEditable(True)
         self.setInsertPolicy(QComboBox.NoInsert)
         self.setCompleter(None)
+        self.setItemDelegate(_CenterAlignDelegate(self))
         le = self.lineEdit()
         le.setReadOnly(True)
-        le.setAlignment(Qt.AlignCenter)
+        le.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         le.setFocusPolicy(Qt.NoFocus)
         le.installEventFilter(self)
+        self.view().setTextElideMode(Qt.ElideNone)
 
     def eventFilter(self, obj, ev):
         if obj is self.lineEdit() and ev.type() == QEvent.MouseButtonPress:
@@ -2716,33 +2723,33 @@ class BetEntryTab(QWidget):
         hvl.addWidget(ht)
         hvl.addWidget(line)
 
-        self._pcb = QComboBox()
+        self._pcb = _CenterCombo()
         self._pcb.setFont(bb(fs))
-        self._pcb.setStyleSheet(combo_ss())
+        self._pcb.setStyleSheet(combo_ss(center=True))
         self._pcb.setFixedWidth(pid_w)
-        self._pcb.view().setTextElideMode(Qt.ElideNone)
         self._pcb.view().setMinimumWidth(pid_w)
         for i in range(1, 11):
             self._pcb.addItem(f"P{i}")
         self._pcb.currentIndexChanged.connect(self._on_slot)
 
-        self._bk = QComboBox()
+        self._bk = _CenterCombo()
         self._bk.setFont(bb(fs))
-        self._bk.setStyleSheet(combo_ss())
+        self._bk.setStyleSheet(combo_ss(center=True))
         self._bk.addItems(BOOKS)
         self._bk.setFixedWidth(book_w)
-        self._bk.view().setTextElideMode(Qt.ElideNone)
         self._bk.view().setMinimumWidth(book_w)
 
         self._sk = QLineEdit("50.00")
         self._sk.setFont(bb(fs))
         self._sk.setStyleSheet(input_ss())
+        self._sk.setAlignment(Qt.AlignCenter)
         self._sk.setFixedWidth(stake_w)
         self._sk.textChanged.connect(self._recalc)
 
         self._bo = QLineEdit("0")
         self._bo.setFont(bb(fs))
         self._bo.setStyleSheet(input_ss())
+        self._bo.setAlignment(Qt.AlignCenter)
         self._bo.setFixedWidth(stake_w)
         self._bo.textChanged.connect(self._recalc)
 
