@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QProgressBar, QSpacerItem, QStyledItemDelegate,
     QStyle, QStyleOptionComboBox
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent, QPoint
 from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QPixmap, QColor, QPalette, QPainter, QImage, QBrush
 import re
 from datetime import datetime, timedelta
@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.17"
+VERSION = "4.3.18"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2699,22 +2699,23 @@ class AddLegDialog(QDialog):
 # ─────────────────────────────────────────────
 # BET ENTRY TAB
 # ─────────────────────────────────────────────
-class _CenterAlignDelegate(QStyledItemDelegate):
-    def initStyleOption(self, option, index):
-        super().initStyleOption(option, index)
-        option.displayAlignment = Qt.AlignCenter
-
-
 class _CenterCombo(QComboBox):
-    """Non-editable combo: paints current text centered, never ellides it."""
+    """Closed text centered. Popup is a fixed scrollable list inside the window."""
+
+    _POP_W = 200
+    _POP_H = 184
+    _POP_ITEMS = 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setEditable(False)
         self.setInsertPolicy(QComboBox.NoInsert)
-        self.setItemDelegate(_CenterAlignDelegate(self))
-        self.view().setTextElideMode(Qt.ElideNone)
+        self.setMaxVisibleItems(self._POP_ITEMS)
         self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        v = self.view()
+        v.setTextElideMode(Qt.ElideNone)
+        v.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        v.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -2724,14 +2725,32 @@ class _CenterCombo(QComboBox):
         opt.currentText = ""
         opt.elideMode = Qt.ElideNone
         self.style().drawComplexControl(QStyle.CC_ComboBox, opt, painter, self)
-        rect = self.style().subControlRect(
-            QStyle.CC_ComboBox, opt, QStyle.SC_ComboBoxEditField, self)
+        rect = self.rect().adjusted(6, 0, -18, 0)
         painter.setPen(QColor("#ffffff"))
         painter.setFont(self.font())
         painter.drawText(rect, Qt.AlignCenter | Qt.TextSingleLine, text)
 
-    def currentText(self):
-        return super().currentText()
+    def showPopup(self):
+        super().showPopup()
+        popup = self.view().window()
+        if popup is None or popup is self.window():
+            return
+        popup.resize(self._POP_W, self._POP_H)
+        origin = self.mapToGlobal(QPoint(0, self.height()))
+        win = self.window()
+        top_left = win.mapToGlobal(QPoint(0, 0))
+        wg = QRect(top_left, win.size())
+        x = origin.x()
+        y = origin.y()
+        if x + self._POP_W > wg.right():
+            x = wg.right() - self._POP_W
+        if x < wg.left():
+            x = wg.left()
+        if y + self._POP_H > wg.bottom():
+            y = origin.y() - self.height() - self._POP_H
+        if y < wg.top():
+            y = wg.top()
+        popup.move(x, y)
 
 
 class BetEntryTab(QWidget):
@@ -2930,14 +2949,12 @@ class BetEntryTab(QWidget):
         c.setFont(bb(8))
         c.setStyleSheet(combo_ss(center=True))
         c.setMinimumHeight(28)
-        c.setMaxVisibleItems(18)
+        c.setMaxVisibleItems(8)
         c.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         c.setMinimumContentsLength(1)
-        c.view().setTextElideMode(Qt.ElideNone)
         if items:
             c.addItems(items)
-        self._fit_popup(c)
         return c
 
     def _cell_input(self, placeholder, text=""):
@@ -2951,12 +2968,10 @@ class BetEntryTab(QWidget):
         return e
 
     def _fit_popup(self, combo):
-        fm = combo.fontMetrics()
-        widest = combo.width()
-        for i in range(combo.count()):
-            widest = max(widest, fm.horizontalAdvance(combo.itemText(i)) + 28)
+        combo.setMaxVisibleItems(8)
         combo.view().setTextElideMode(Qt.ElideNone)
-        combo.view().setMinimumWidth(widest)
+        combo.view().setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        combo.view().setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2966,39 +2981,13 @@ class BetEntryTab(QWidget):
         if not hasattr(self, "_lt"):
             return
         hdr = self._lt.horizontalHeader()
-        fm = QFontMetrics(bb(8))
-        pad = 40
-        mins = [
-            fm.horizontalAdvance("WWW @ WWW") + pad,
-            fm.horizontalAdvance("WWW") + pad,
-            fm.horizontalAdvance("WWWWWWWWWWWW") + pad,
-            fm.horizontalAdvance("UNDER") + pad,
-            fm.horizontalAdvance("249.5") + pad,
-            max(fm.horizontalAdvance(m) for m in MARKETS) + pad,
-            fm.horizontalAdvance("-1100") + pad,
-        ]
-        for row in self._rows:
-            for key, idx in (("gc", 0), ("tc", 1), ("pc", 2), ("oc", 3), ("mc", 5)):
-                c = row.get(key)
-                if c is None:
-                    continue
-                for i in range(c.count()):
-                    mins[idx] = max(mins[idx], fm.horizontalAdvance(c.itemText(i)) + pad)
-            for key, idx in (("li", 4), ("oi", 6)):
-                w = row.get(key)
-                if w is not None:
-                    mins[idx] = max(mins[idx], fm.horizontalAdvance(w.text() or "000.0") + pad)
-        avail = max(0, self._lt.viewport().width() - 40)
-        total = sum(mins)
-        hdr.setMinimumSectionSize(40)
+        hdr.setMinimumSectionSize(48)
         hdr.setStretchLastSection(False)
+        hdr.setDefaultAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        for i in range(7):
+            hdr.setSectionResizeMode(i, QHeaderView.Stretch)
         hdr.setSectionResizeMode(7, QHeaderView.Fixed)
         self._lt.setColumnWidth(7, 40)
-        extra = max(0, avail - total)
-        for i, m in enumerate(mins):
-            hdr.setSectionResizeMode(i, QHeaderView.Interactive)
-            w = m + (extra * m // total if total else 0)
-            self._lt.setColumnWidth(i, w)
 
     def _sync_table_height(self):
         hh = self._lt.horizontalHeader().height() or 26
