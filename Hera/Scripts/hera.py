@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.4"
+VERSION = "4.3.5"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -3202,7 +3202,7 @@ class ActiveLegsTab(QWidget):
         ab.setFont(bb(9))
         ab.setStyleSheet(ghost_ss(TEXT_DARK))
         ab.setFixedWidth(70)
-        ab.clicked.connect(partial(self._archive, label))
+        ab.clicked.connect(partial(self._archive, pid))
         hl.addWidget(ab)
         bl.addWidget(hdr)
 
@@ -3289,11 +3289,11 @@ class ActiveLegsTab(QWidget):
         bl.addWidget(tbl)
         return block
 
-    def _archive(self, label):
+    def _archive(self, pid):
         conn = db()
         conn.execute(
-            "UPDATE parlays SET status='ARCHIVED' "
-            "WHERE parlay_label=? AND status IN ('LIVE','PENDING')", (label,))
+            "UPDATE parlays SET status='ARCHIVED' WHERE id=? AND status IN ('LIVE','PENDING')",
+            (pid,))
         conn.commit()
         conn.close()
         self.refresh()
