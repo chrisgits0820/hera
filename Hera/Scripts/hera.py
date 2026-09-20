@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.16"
+VERSION = "4.3.17"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -85,6 +85,8 @@ def load_team_colors():
 
 def colors_for_team(team):
     """CSV pair (bg, fg) for a full name or abbreviation, or None."""
+    if not TEAM_COLORS:
+        load_team_colors()
     if not team:
         return None
     t = str(team).strip()
@@ -104,30 +106,29 @@ def tracking_table_ss():
 
 
 class _TeamRowDelegate(QStyledItemDelegate):
-    """Paints full-row team colors on Active Legs and Game Tracker tables only."""
+    """Paints a full row from the TEAM cell. Used only on Active Legs and Game Tracker."""
+
+    def __init__(self, team_col, parent=None):
+        super().__init__(parent)
+        self._team_col = team_col
 
     def paint(self, painter, option, index):
-        bg = index.data(Qt.BackgroundRole)
-        fg = index.data(Qt.ForegroundRole)
-        fill = None
-        if isinstance(bg, QBrush) and bg.style() != Qt.NoBrush:
-            fill = bg.color()
-        elif isinstance(bg, QColor) and bg.isValid():
-            fill = bg
+        team = index.sibling(index.row(), self._team_col).data(Qt.DisplayRole)
+        pair = colors_for_team(team)
         painter.save()
-        if fill is not None and fill.alpha() > 0:
-            painter.fillRect(option.rect, fill)
+        painter.setClipRect(option.rect)
+        if pair:
+            painter.fillRect(option.rect, QColor(pair[0]))
+            painter.setPen(QColor(pair[1]))
+        else:
+            painter.fillRect(option.rect, QColor(CARD))
+            painter.setPen(QColor(TEXT))
+        fr = index.data(Qt.FontRole)
+        painter.setFont(fr if isinstance(fr, QFont) else option.font)
         text = index.data(Qt.DisplayRole)
-        if text is None:
-            text = ""
-        pen = QColor(TEXT)
-        if isinstance(fg, QBrush):
-            pen = fg.color()
-        elif isinstance(fg, QColor) and fg.isValid():
-            pen = fg
-        painter.setPen(pen)
-        painter.setFont(index.data(Qt.FontRole) or option.font)
-        painter.drawText(option.rect, Qt.AlignCenter | Qt.TextSingleLine, str(text))
+        painter.drawText(
+            option.rect, Qt.AlignCenter | Qt.TextSingleLine,
+            "" if text is None else str(text))
         painter.restore()
 
 # ─────────────────────────────────────────────
@@ -1610,7 +1611,7 @@ class ActiveBetsPanel(QWidget):
         self._tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         self._tbl.setSelectionMode(QTableWidget.NoSelection)
         self._tbl.setStyleSheet(tracking_table_ss())
-        self._tbl.setItemDelegate(_TeamRowDelegate(self._tbl))
+        self._tbl.setItemDelegate(_TeamRowDelegate(0, self._tbl))
         self._tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._tbl.setShowGrid(False)
         lay.addWidget(self._tbl)
@@ -3539,7 +3540,7 @@ class ActiveLegsTab(QWidget):
         tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         tbl.setSelectionMode(QTableWidget.NoSelection)
         tbl.setStyleSheet(tracking_table_ss())
-        tbl.setItemDelegate(_TeamRowDelegate(tbl))
+        tbl.setItemDelegate(_TeamRowDelegate(1, tbl))
         tbl.setShowGrid(False)
         tbl.setFrameShape(QFrame.NoFrame)
         tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
