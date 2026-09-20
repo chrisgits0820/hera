@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.2"
+VERSION = "4.3.3"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -40,6 +40,7 @@ DB_PATH = os.path.join(DATA_DIR, "hera.db")
 LOGO_DIR = os.path.join(HERA_DIR, "NFL LOGOS")
 COLOR_CSV = os.path.join(DATA_DIR, "Hera_Color_Hex_Codes_v3_00b8.csv")
 AUDIO_PATH = os.path.join(HERA_DIR, "HERA_AUDIO.mp3")
+SPLASH_LOCK = os.path.join(HERA_DIR, "hera_splash_lock.png")
 CHARCOAL = "#262626"  # CSV APP BACKGROUND / EUTHENIA
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -771,12 +772,9 @@ class LoadingScreen(QWidget):
         self._data_done_at = None
         self._player = None
         self._audio_out = None
-        self._statue = QPixmap()
-        src = LOGO_NOBG if os.path.exists(LOGO_NOBG) else LOGO_ORIG
-        if os.path.exists(src):
-            colored = _colorize_statue(QPixmap(src), self.HERA_HEX)
-            colored = colored.scaledToHeight(560, Qt.SmoothTransformation)
-            self._statue = _statue_rim(colored, self.HERA_HEX)
+        self._lock = QPixmap()
+        if os.path.exists(SPLASH_LOCK):
+            self._lock = QPixmap(SPLASH_LOCK)
         self._worker = BootWorker()
         self._worker.progress.connect(self._on_boot_status)
         self._worker.finished_ok.connect(self._on_ready)
@@ -854,14 +852,18 @@ class LoadingScreen(QWidget):
 
     def paintEvent(self, event):
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.fillRect(self.rect(), QColor(CHARCOAL))
         w, h = self.width(), self.height()
         hera_c = QColor(self.HERA_HEX)
         t = max(0.0, min(100.0, self._pct)) / 100.0
 
-        # Bottom stack — status / bar / % never overlap HERA
+        if not self._lock.isNull():
+            p.drawPixmap(0, 0, self._lock.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
+        # Cover baked-in status/bar/% so live text is not sitting on the mockup labels
+        cover_top = int(h * 0.855)
+        p.fillRect(0, cover_top, w, h - cover_top, QColor(CHARCOAL))
+
         pct_font = QFont(_FF)
         pct_font.setPixelSize(18)
         status_font = QFont(_FF)
@@ -874,44 +876,6 @@ class LoadingScreen(QWidget):
         pct_y = h - bottom - pct_h
         bar_y = pct_y - 14 - bar_h
         status_y = bar_y - 22 - st_h
-        hera_bottom = status_y - 40
-
-        word = "HERA"
-        hera_font = QFont(_FF)
-        hera_font.setPixelSize(168)
-        fm = None
-        for ps in range(168, 72, -2):
-            hera_font.setPixelSize(ps)
-            p.setFont(hera_font)
-            fm = p.fontMetrics()
-            br = fm.boundingRect(word)
-            if br.width() <= w - 96 and br.height() <= 220:
-                break
-        p.setFont(hera_font)
-        fm = p.fontMetrics()
-        br = fm.boundingRect(word)
-        hera_h = br.height()
-        hera_top = hera_bottom - hera_h
-        statue_gap = 20
-        statue_bottom = hera_top - statue_gap
-
-        if not self._statue.isNull() and statue_bottom > 24:
-            max_sh = statue_bottom - 12
-            pm = self._statue.scaled(w - 48, max_sh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            x = (w - pm.width()) // 2
-            y = max(8, statue_bottom - pm.height())
-            p.drawPixmap(x, y, pm)
-
-        hera_box = QRect(48, hera_top, w - 96, hera_h)
-        p.setFont(hera_font)
-        for grow, alpha in ((28, 55), (18, 100), (10, 160), (4, 220)):
-            c = QColor(hera_c)
-            c.setAlpha(alpha)
-            p.setPen(c)
-            p.drawText(hera_box.adjusted(-grow, -grow, grow, grow),
-                       Qt.AlignHCenter | Qt.AlignVCenter, word)
-        p.setPen(hera_c)
-        p.drawText(hera_box, Qt.AlignHCenter | Qt.AlignVCenter, word)
 
         p.setFont(status_font)
         p.setPen(QColor("#a8a8a8"))
