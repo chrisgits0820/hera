@@ -22,14 +22,14 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QProgressBar, QSpacerItem
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect
-from PySide6.QtGui import QFont, QFontDatabase, QPixmap, QColor, QPalette, QPainter, QImage
+from PySide6.QtGui import QFont, QFontDatabase, QPixmap, QColor, QPalette, QPainter, QImage, QFontMetrics
 import re
 from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.11"
+VERSION = "4.3.12"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2651,7 +2651,7 @@ class BetEntryTab(QWidget):
         outer.setContentsMargins(20, 8, 20, 12)
         outer.setSpacing(0)
 
-        fs = 10  # same size as BET INFO / CALCULATIONS
+        fs = 10
 
         def section_head(title):
             box = QWidget()
@@ -2661,6 +2661,7 @@ class BetEntryTab(QWidget):
             vl.setSpacing(3)
             l = QLabel(title)
             l.setFont(bb(fs))
+            l.setAlignment(Qt.AlignHCenter)
             l.setStyleSheet("color:#ffffff; letter-spacing:3px; background:transparent;")
             line = QFrame()
             line.setFrameShape(QFrame.HLine)
@@ -2676,97 +2677,99 @@ class BetEntryTab(QWidget):
             lab.setStyleSheet("color:#ffffff; background:transparent;")
             return lab
 
-        info = QWidget()
-        info.setStyleSheet("background:transparent;")
-        ig = QGridLayout(info)
+        top_left = QWidget()
+        top_left.setStyleSheet("background:transparent;")
+        top_left.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        tg = QGridLayout(top_left)
+        tg.setContentsMargins(0, 0, 0, 0)
+        tg.setHorizontalSpacing(6)
+        tg.setVerticalSpacing(6)
+        tg.addWidget(section_head("BET INFO"), 0, 0, 1, 2)
+
+        self._pcb = QComboBox()
+        self._pcb.setFont(bb(fs))
+        self._pcb.setStyleSheet(combo_ss())
+        for i in range(1, 11):
+            self._pcb.addItem(f"P{i}")
+        self._pcb.currentIndexChanged.connect(self._on_slot)
+        pfm = self._pcb.fontMetrics()
+        self._pcb.setFixedWidth(pfm.horizontalAdvance("P10") + 22)
+        tg.addWidget(self._pcb, 1, 1, Qt.AlignLeft)
+
+        body = QWidget()
+        body.setStyleSheet("background:transparent;")
+        body.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        ig = QGridLayout(body)
         ig.setContentsMargins(0, 0, 0, 0)
-        ig.setHorizontalSpacing(4)
+        ig.setHorizontalSpacing(6)
         ig.setVerticalSpacing(6)
-        ig.addWidget(section_head("BET INFO"), 0, 0, 1, 2)
+
         self._bk = QComboBox()
         self._bk.setFont(bb(fs))
         self._bk.setStyleSheet(combo_ss())
         self._bk.addItems(BOOKS)
         fm = self._bk.fontMetrics()
-        book_w = max(fm.horizontalAdvance(b) for b in BOOKS) + 22
+        book_w = fm.horizontalAdvance("POLYMARKET") + 22
         self._bk.setFixedWidth(book_w)
         self._bk.view().setMinimumWidth(book_w)
-        ig.addWidget(fl("BOOK"), 1, 0)
-        ig.addWidget(self._bk, 1, 1)
+        ig.addWidget(fl("BOOK"), 0, 0)
+        ig.addWidget(self._bk, 0, 1, Qt.AlignLeft)
         self._sk = QLineEdit("50.00")
         self._sk.setFont(bb(fs))
         self._sk.setStyleSheet(input_ss())
         self._sk.setFixedWidth(fm.horizontalAdvance("000.00") + 16)
         self._sk.textChanged.connect(self._recalc)
-        ig.addWidget(fl("STAKE"), 2, 0)
-        ig.addWidget(self._sk, 2, 1)
+        ig.addWidget(fl("STAKE"), 1, 0)
+        ig.addWidget(self._sk, 1, 1, Qt.AlignLeft)
         self._bo = QLineEdit("0")
         self._bo.setFont(bb(fs))
         self._bo.setStyleSheet(input_ss())
         self._bo.setFixedWidth(fm.horizontalAdvance("000.00") + 16)
         self._bo.textChanged.connect(self._recalc)
-        ig.addWidget(fl("BOOST %"), 3, 0)
-        ig.addWidget(self._bo, 3, 1)
+        ig.addWidget(fl("BOOST %"), 2, 0)
+        ig.addWidget(self._bo, 2, 1, Qt.AlignLeft)
 
-        calc = QWidget()
-        calc.setStyleSheet("background:transparent;")
-        cg = QGridLayout(calc)
-        cg.setContentsMargins(0, 0, 0, 0)
-        cg.setHorizontalSpacing(14)
-        cg.setVerticalSpacing(6)
-        cg.addWidget(section_head("CALCULATIONS"), 0, 0, 1, 2)
         self._cv = {}
         for ri, field in enumerate([
             "LEGS", "PARLAY ODDS", "BOOSTED ODDS", "STAKE", "TO WIN", "PAYOUT"
-        ], start=1):
-            cg.addWidget(fl(field), ri, 0)
+        ], start=3):
+            ig.addWidget(fl(field), ri, 0)
             v = QLabel("—")
             v.setFont(bb(fs))
             v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             color = GREEN if field == "PAYOUT" else "#ffffff"
             v.setStyleSheet(f"color:{color}; background:transparent;")
-            cg.addWidget(v, ri, 1)
+            ig.addWidget(v, ri, 1)
             self._cv[field] = v
 
-        self._pcb = QComboBox()
-        self._pcb.setFont(bb(fs))
-        self._pcb.setStyleSheet(combo_ss())
-        self._pcb.setFixedWidth(64)
-        for i in range(1, 11):
-            self._pcb.addItem(f"P{i}")
-        self._pcb.currentIndexChanged.connect(self._on_slot)
-
-        top = QHBoxLayout()
-        top.setContentsMargins(0, 0, 0, 10)
-        top.setSpacing(40)
-        top.setAlignment(Qt.AlignTop)
-        top.addWidget(info, 0, Qt.AlignTop)
-        top.addWidget(calc, 0, Qt.AlignTop)
         acts = QWidget()
         acts.setStyleSheet("background:transparent;")
         alay = QHBoxLayout(acts)
         alay.setContentsMargins(0, 0, 0, 0)
-        alay.setSpacing(10)
-        alay.setAlignment(Qt.AlignTop)
+        alay.setSpacing(4)
+        bfm = QFontMetrics(bb(fs))
         ab = QPushButton("ADD LEG")
         ab.setFont(bb(fs))
         ab.setStyleSheet(ghost_ss(GREEN))
+        ab.setFixedHeight(28)
+        ab.setMinimumWidth(int(bfm.horizontalAdvance("ADD LEG") + 16))
         ab.clicked.connect(self._add_leg)
         nb = QPushButton("NEW PARLAY")
         nb.setFont(bb(fs))
         nb.setStyleSheet(ghost_ss(GREEN))
+        nb.setFixedHeight(28)
+        nb.setMinimumWidth(int(bfm.horizontalAdvance("NEW PARLAY") + 16))
         nb.clicked.connect(self._new_parlay)
         sb = QPushButton("SUBMIT PARLAY")
         sb.setFont(bb(fs))
         sb.setStyleSheet(btn_ss(GREEN, "#000"))
+        sb.setFixedHeight(28)
+        sb.setMinimumWidth(int(bfm.horizontalAdvance("SUBMIT PARLAY") + 24))
         sb.clicked.connect(self._submit)
         alay.addWidget(ab)
         alay.addWidget(nb)
         alay.addWidget(sb)
-        top.addWidget(acts, 0, Qt.AlignTop)
-        top.addStretch(1)
-        top.addWidget(self._pcb, 0, Qt.AlignTop)
-        outer.addLayout(top)
+        alay.addStretch()
 
         self._lt = QTableWidget(0, 8)
         self._lt.setHorizontalHeaderLabels(["GAME", "TEAM", "PLAYER", "O/U", "LINE", "MARKET", "ODDS", ""])
@@ -2792,12 +2795,17 @@ class BetEntryTab(QWidget):
         self._lt.setColumnWidth(7, 40)
         self._sync_table_height()
 
-        tr = QHBoxLayout()
-        tr.setContentsMargins(0, 0, 0, 0)
-        tr.setSpacing(0)
-        tr.addWidget(self._lt)
-        outer.addLayout(tr)
-        outer.addStretch()
+        shell = QGridLayout()
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setHorizontalSpacing(24)
+        shell.setVerticalSpacing(6)
+        shell.addWidget(top_left, 0, 0, Qt.AlignTop)
+        shell.addWidget(acts, 0, 1, Qt.AlignLeft | Qt.AlignVCenter)
+        shell.addWidget(body, 1, 0, Qt.AlignTop)
+        shell.addWidget(self._lt, 1, 1)
+        shell.setColumnStretch(1, 1)
+        shell.setRowStretch(1, 1)
+        outer.addLayout(shell)
         self._load_parlay()
 
     def set_games(self, g):
