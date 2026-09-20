@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.3"
+VERSION = "4.3.4"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2578,9 +2578,8 @@ class BetEntryTab(QWidget):
         self.setStyleSheet(f"background:{BG};")
         self._games = []
         self._parlay_id = None
-        self._legs = []
-        self._pending_row = False
-        self._pending_widgets = {}  # holds widget refs for pending inline row
+        self._rows = []  # list of {gc,tc,pc,oc,li,mc,oi,lid}
+        self._loading = False
         self._build()
 
     def _build(self):
@@ -2588,7 +2587,6 @@ class BetEntryTab(QWidget):
         outer.setContentsMargins(16, 12, 16, 12)
         outer.setSpacing(10)
 
-        # Header row
         hr = QHBoxLayout()
         al = QLabel("ACTIVE PARLAY")
         al.setFont(bb(16))
@@ -2601,15 +2599,8 @@ class BetEntryTab(QWidget):
         self._pcb.setFixedWidth(80)
         for i in range(1, 11):
             self._pcb.addItem(f"P{i}")
-        self._pcb.currentIndexChanged.connect(self._load_parlay)
+        self._pcb.currentIndexChanged.connect(self._on_slot)
         hr.addWidget(self._pcb)
-        np_btn = QPushButton("+ NEW PARLAY")
-        np_btn.setFont(bb(11))
-        np_btn.setStyleSheet(ghost_ss())
-        np_btn.setMinimumWidth(110)
-        np_btn.clicked.connect(self._new_parlay)
-        hr.addSpacing(6)
-        hr.addWidget(np_btn)
         outer.addLayout(hr)
 
         # Info + calc card
@@ -2680,11 +2671,23 @@ class BetEntryTab(QWidget):
         self._lt.setEditTriggers(QTableWidget.NoEditTriggers)
         self._lt.setSelectionMode(QTableWidget.NoSelection)
         self._lt.setStyleSheet(table_ss())
-        self._lt.setMinimumHeight(100)
-        self._lt.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self._lt.horizontalHeader().setSectionResizeMode(7, QHeaderView.Fixed)
-        self._lt.setColumnWidth(7, 30)
+        self._lt.setMinimumHeight(180)
+        self._lt.setTextElideMode(Qt.ElideNone)
+        self._lt.setWordWrap(False)
         self._lt.setShowGrid(False)
+        hdr = self._lt.horizontalHeader()
+        hdr.setMinimumSectionSize(72)
+        hdr.setStretchLastSection(False)
+        hdr.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        widths = [150, 90, 240, 100, 90, 130, 90, 40]
+        modes = [
+            QHeaderView.Interactive, QHeaderView.Interactive, QHeaderView.Stretch,
+            QHeaderView.Interactive, QHeaderView.Interactive, QHeaderView.Interactive,
+            QHeaderView.Interactive, QHeaderView.Fixed,
+        ]
+        for i, (w, m) in enumerate(zip(widths, modes)):
+            hdr.setSectionResizeMode(i, m)
+            self._lt.setColumnWidth(i, w)
         lcl.addWidget(self._lt)
         self._el = QLabel("NO LEGS — CLICK + ADD LEG")
         self._el.setFont(bb(11))
@@ -2693,7 +2696,6 @@ class BetEntryTab(QWidget):
         lcl.addWidget(self._el)
         outer.addWidget(lc)
 
-        # Buttons
         br = QHBoxLayout()
         ab = QPushButton("+ ADD LEG")
         ab.setFont(bb(12))
@@ -2717,62 +2719,242 @@ class BetEntryTab(QWidget):
         br.addWidget(sb)
         outer.addLayout(br)
         outer.addStretch()
-        self._load_parlay(0)
+        self._load_parlay()
 
     def set_games(self, g):
-        self._games = g
+        self._games = g or []
+        for row in self._rows:
+            self._refill_games(row)
 
-    def _load_parlay(self, idx=None):
+    def _cell_combo(self, items, min_chars=8):
+        c = QComboBox()
+        c.setFont(bb(11))
+        c.setStyleSheet(combo_ss())
+        c.setMinimumHeight(36)
+        c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        c.setMinimumContentsLength(min_chars)
+        c.setMaxVisibleItems(18)
+        if items:
+            c.addItems(items)
+        return c
+
+    def _cell_input(self, placeholder, text=""):
+        e = QLineEdit(text)
+        e.setFont(bb(11))
+        e.setStyleSheet(input_ss())
+        e.setMinimumHeight(36)
+        e.setPlaceholderText(placeholder)
+        return e
+
+    def _set_combo(self, combo, value):
+        if not value:
+            return
+        i = combo.findText(value)
+        if i >= 0:
+            combo.setCurrentIndex(i)
+        else:
+            combo.addItem(value)
+            combo.setCurrentIndex(combo.count() - 1)
+
+    def _on_slot(self, _idx=None):
+        if self._loading:
+            return
+        self._persist()
+        self._load_parlay()
+
+    def _ensure_parlay(self):
         label = self._pcb.currentText()
         conn = db()
         c = conn.cursor()
-        c.execute("SELECT id FROM parlays WHERE parlay_label=? AND status='PENDING'", (label,))
+        c.execute("SELECT id, book, stake, boost_pct FROM parlays WHERE parlay_label=? AND status='PENDING'",
+                  (label,))
         row = c.fetchone()
         if not row:
             c.execute(
                 "INSERT INTO parlays(parlay_label,book,stake,boost_pct,status) VALUES(?,?,?,?,?)",
-                (label, BOOKS[0], 50.0, 0.0, "PENDING"))
+                (label, self._bk.currentText() if hasattr(self, "_bk") else BOOKS[0],
+                 50.0, 0.0, "PENDING"))
             conn.commit()
-            self._parlay_id = c.lastrowid
-        else:
-            self._parlay_id = row[0]
-        c.execute("SELECT * FROM legs WHERE parlay_id=?", (self._parlay_id,))
-        self._legs = c.fetchall()
+            pid = c.lastrowid
+            conn.close()
+            return pid, BOOKS[0], 50.0, 0.0
         conn.close()
-        self._refresh_tbl()
+        return row[0], row[1], row[2], row[3]
+
+    def _clear_table(self):
+        self._rows = []
+        self._lt.setRowCount(0)
+        self._el.setVisible(True)
+
+    def _load_parlay(self, idx=None):
+        self._loading = True
+        self._parlay_id, book, stake, boost = self._ensure_parlay()
+        if book:
+            self._set_combo(self._bk, book)
+        self._sk.blockSignals(True)
+        self._bo.blockSignals(True)
+        self._sk.setText(f"{float(stake or 0):.2f}")
+        self._bo.setText(str(boost if boost is not None else 0))
+        self._sk.blockSignals(False)
+        self._bo.blockSignals(False)
+
+        conn = db()
+        c = conn.cursor()
+        c.execute(
+            "SELECT id, game_id, game_display, team, player, market, ou, line, odds "
+            "FROM legs WHERE parlay_id=?",
+            (self._parlay_id,))
+        legs = c.fetchall()
+        conn.close()
+
+        self._clear_table()
+        for leg in legs:
+            self._insert_row({
+                "lid": leg[0],
+                "game_id": leg[1] or "",
+                "game_display": leg[2] or "",
+                "team": leg[3] or "N/A",
+                "player": leg[4] or "N/A",
+                "market": leg[5] or "ML",
+                "ou": leg[6] or "N/A",
+                "line": leg[7] or "",
+                "odds": leg[8] or "",
+            })
+        self._loading = False
         self._recalc()
 
-    def _refresh_tbl(self):
-        has = len(self._legs) > 0
-        self._el.setVisible(not has)
-        self._lt.setRowCount(len(self._legs))
-        for r, leg in enumerate(self._legs):
-            lid = leg[0]
-            vals = [leg[3] or "—", leg[4] or "—", leg[5] or "—",
-                    leg[7] or "—", leg[8] or "—", leg[6] or "—", leg[9] or "—"]
-            for ci, val in enumerate(vals):
-                it = QTableWidgetItem(str(val))
-                it.setFont(bb(11))
-                it.setForeground(QColor(TEXT))
-                it.setTextAlignment(Qt.AlignCenter)
-                self._lt.setItem(r, ci, it)
-            self._lt.setRowHeight(r, 36)
-            db_btn = QPushButton("✕")
-            db_btn.setFont(bb(11))
-            db_btn.setStyleSheet(
-                f"QPushButton{{background:transparent;color:{RED};border:none;}}"
-                f"QPushButton:hover{{color:white;}}")
-            db_btn.clicked.connect(partial(self._del, lid))
-            self._lt.setCellWidget(r, 7, db_btn)
+    def _refill_games(self, row):
+        gc = row["gc"]
+        prev = gc.currentText()
+        gc.blockSignals(True)
+        gc.clear()
+        for g in self._games:
+            gc.addItem(f"{g['away']['abbr']} @ {g['home']['abbr']}", g["id"])
+        if prev:
+            self._set_combo(gc, prev)
+        gc.blockSignals(False)
+        self._populate_teams(row, gc.currentIndex(), keep_team=True)
 
-    def _del(self, lid):
-        conn = db()
-        conn.execute("DELETE FROM legs WHERE id=?", (lid,))
-        conn.commit()
-        conn.close()
-        self._load_parlay()
+    def _populate_teams(self, row, idx, keep_team=False):
+        tc, pc = row["tc"], row["pc"]
+        saved_team = tc.currentText() if keep_team else ""
+        saved_player = pc.currentText() if keep_team else ""
+        tc.blockSignals(True)
+        tc.clear()
+        tc.addItem("N/A")
+        if 0 <= idx < len(self._games):
+            g = self._games[idx]
+            tc.addItem(g["away"]["abbr"])
+            tc.addItem(g["home"]["abbr"])
+        if saved_team:
+            self._set_combo(tc, saved_team)
+        tc.blockSignals(False)
+        self._populate_players(row, tc.currentIndex(), keep_player=keep_team, saved_player=saved_player)
 
-    def _recalc(self):
+    def _populate_players(self, row, t_idx, keep_player=False, saved_player=""):
+        gc, tc, pc = row["gc"], row["tc"], row["pc"]
+        pc.blockSignals(True)
+        pc.clear()
+        pc.addItem("N/A")
+        gi = gc.currentIndex()
+        if gi >= 0 and gi < len(self._games) and t_idx > 0:
+            g = self._games[gi]
+            abbr = tc.currentText()
+            tid = g["away"]["id"] if abbr == g["away"]["abbr"] else g["home"]["id"]
+            for p in fetch_roster(g["id"], tid) or []:
+                pc.addItem(p["name"])
+        if keep_player and saved_player:
+            self._set_combo(pc, saved_player)
+        pc.blockSignals(False)
+
+    def _insert_row(self, data=None):
+        data = data or {}
+        self._el.setVisible(False)
+        r = self._lt.rowCount()
+        self._lt.insertRow(r)
+        self._lt.setRowHeight(r, 48)
+
+        gc = self._cell_combo([], 12)
+        for g in self._games:
+            gc.addItem(f"{g['away']['abbr']} @ {g['home']['abbr']}", g["id"])
+        if data.get("game_display"):
+            self._set_combo(gc, data["game_display"])
+
+        tc = self._cell_combo(["N/A"], 4)
+        pc = self._cell_combo(["N/A"], 16)
+        oc = self._cell_combo(["OVER", "UNDER", "N/A"], 6)
+        li = self._cell_input("249.5", data.get("line", ""))
+        mc = self._cell_combo(MARKETS, 8)
+        oi = self._cell_input("-115", data.get("odds", ""))
+
+        row = {
+            "gc": gc, "tc": tc, "pc": pc, "oc": oc, "li": li, "mc": mc, "oi": oi,
+            "lid": data.get("lid"),
+        }
+
+        self._lt.setCellWidget(r, 0, gc)
+        self._lt.setCellWidget(r, 1, tc)
+        self._lt.setCellWidget(r, 2, pc)
+        self._lt.setCellWidget(r, 3, oc)
+        self._lt.setCellWidget(r, 4, li)
+        self._lt.setCellWidget(r, 5, mc)
+        self._lt.setCellWidget(r, 6, oi)
+
+        xb = QPushButton("✕")
+        xb.setFont(bb(11))
+        xb.setFixedWidth(32)
+        xb.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{RED};border:none;}}"
+            f"QPushButton:hover{{color:white;}}")
+        xb.clicked.connect(lambda: self._del_row(row))
+        self._lt.setCellWidget(r, 7, xb)
+
+        gc.currentIndexChanged.connect(lambda i, rw=row: self._populate_teams(rw, i))
+        tc.currentIndexChanged.connect(lambda i, rw=row: self._populate_players(rw, i))
+        oi.textChanged.connect(self._recalc)
+        self._populate_teams(row, gc.currentIndex(), keep_team=True)
+        if data.get("team"):
+            self._set_combo(tc, data["team"])
+            self._populate_players(row, tc.currentIndex(), keep_player=True, saved_player=data.get("player", ""))
+        if data.get("ou"):
+            self._set_combo(oc, data["ou"])
+        if data.get("market"):
+            self._set_combo(mc, data["market"])
+
+        self._rows.append(row)
+        self._recalc()
+        return row
+
+    def _row_index(self, row):
+        for i, rw in enumerate(self._rows):
+            if rw is row:
+                return i
+        return -1
+
+    def _del_row(self, row):
+        idx = self._row_index(row)
+        if idx < 0:
+            return
+        lid = row.get("lid")
+        if lid:
+            conn = db()
+            conn.execute("DELETE FROM legs WHERE id=?", (lid,))
+            conn.commit()
+            conn.close()
+        self._lt.removeRow(idx)
+        self._rows.pop(idx)
+        self._el.setVisible(len(self._rows) == 0)
+        self._recalc()
+
+    def _collect_odds(self):
+        odds = []
+        for row in self._rows:
+            raw = (row["oi"].text() or "").strip()
+            if raw:
+                odds.append(raw)
+        return odds
+
+    def _recalc(self, *_args):
         try:
             stake = float(self._sk.text() or 0)
         except Exception:
@@ -2781,13 +2963,65 @@ class BetEntryTab(QWidget):
             boost = float(self._bo.text() or 0)
         except Exception:
             boost = 0.0
-        res = calc_parlay([leg[9] for leg in self._legs if leg[9]], stake, boost)
-        self._cv["LEGS"].setText(str(len(self._legs)))
+        odds = self._collect_odds()
+        res = calc_parlay(odds, stake, boost)
+        self._cv["LEGS"].setText(str(len(self._rows)))
         self._cv["PARLAY ODDS"].setText(res["parlay"])
         self._cv["BOOSTED ODDS"].setText(res["boosted"])
         self._cv["STAKE"].setText(f"${stake:.2f}")
         self._cv["TO WIN"].setText(f"${res['to_win']:.2f}")
         self._cv["PAYOUT"].setText(f"${res['payout']:.2f}")
+
+    def _snapshot_rows(self):
+        out = []
+        for row in self._rows:
+            gi = row["gc"].currentIndex()
+            gid = ""
+            if 0 <= gi < len(self._games):
+                gid = str(self._games[gi].get("id", ""))
+            elif row["gc"].currentData():
+                gid = str(row["gc"].currentData())
+            out.append({
+                "lid": row.get("lid"),
+                "game_id": gid,
+                "game_display": row["gc"].currentText(),
+                "team": row["tc"].currentText(),
+                "player": row["pc"].currentText(),
+                "market": row["mc"].currentText(),
+                "ou": row["oc"].currentText(),
+                "line": row["li"].text(),
+                "odds": row["oi"].text(),
+            })
+        return out
+
+    def _persist(self):
+        if self._loading or not self._parlay_id:
+            return
+        try:
+            stake = float(self._sk.text() or 0)
+        except Exception:
+            stake = 0.0
+        try:
+            boost = float(self._bo.text() or 0)
+        except Exception:
+            boost = 0.0
+        snaps = self._snapshot_rows()
+        conn = db()
+        conn.execute(
+            "UPDATE parlays SET book=?,stake=?,boost_pct=? WHERE id=?",
+            (self._bk.currentText(), stake, boost, self._parlay_id))
+        conn.execute("DELETE FROM legs WHERE parlay_id=?", (self._parlay_id,))
+        for s in snaps:
+            cur = conn.execute(
+                "INSERT INTO legs(parlay_id,game_id,game_display,team,player,"
+                "market,ou,line,odds,leg_status) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (self._parlay_id, s["game_id"], s["game_display"], s["team"], s["player"],
+                 s["market"], s["ou"], s["line"], s["odds"], "PENDING"))
+            s["lid"] = cur.lastrowid
+        conn.commit()
+        conn.close()
+        for row, s in zip(self._rows, snaps):
+            row["lid"] = s["lid"]
 
     def _new_parlay(self):
         label = self._pcb.currentText()
@@ -2799,166 +3033,24 @@ class BetEntryTab(QWidget):
             "DELETE FROM parlays WHERE parlay_label=? AND status='PENDING'", (label,))
         conn.commit()
         conn.close()
-        self._legs = []
         self._parlay_id = None
-        self._load_parlay()
-
-    def _save_pending(self):
-        """Save the current pending inline row to the database."""
-        if not self._pending_row or not self._pending_widgets:
-            return
-        w = self._pending_widgets
-        gc = w.get("gc");
-        tc = w.get("tc");
-        pc = w.get("pc")
-        oc = w.get("oc");
-        li = w.get("li");
-        mc = w.get("mc");
-        oi = w.get("oi")
-        if gc is None:
-            return
-        gi = gc.currentIndex()
-        g = self._games[gi] if 0 <= gi < len(self._games) else {}
-        if not self._parlay_id:
-            self._load_parlay()
-        conn = db()
-        conn.execute(
-            "INSERT INTO legs(parlay_id,game_id,game_display,team,player,"
-            "market,ou,line,odds,leg_status) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (self._parlay_id, str(g.get("id", "")), gc.currentText(),
-             tc.currentText() if tc else "N/A",
-             pc.currentText() if pc else "N/A",
-             mc.currentText() if mc else "ML",
-             oc.currentText() if oc else "N/A",
-             li.text() if li else "",
-             oi.text() if oi else "",
-             "PENDING"))
-        conn.commit();
-        conn.close()
-        self._pending_row = False
-        self._pending_widgets = {}
-        self._load_parlay()
+        self._sk.setText("50.00")
+        self._bo.setText("0")
+        self._bk.setCurrentIndex(0)
+        self._clear_table()
+        self._parlay_id, _, _, _ = self._ensure_parlay()
+        self._recalc()
 
     def _add_leg(self):
-        """Add an inline editable row to the leg table."""
-        if self._pending_row:
-            self._save_pending()
-        self._pending_row = True
-        self._pending_widgets = {}
-        self._el.setVisible(False)
-
-        row = self._lt.rowCount()
-        self._lt.insertRow(row)
-        self._lt.setRowHeight(row, 40)
-
-        # GAME combo
-        gc = QComboBox();
-        gc.setFont(bb(10));
-        gc.setStyleSheet(combo_ss())
-        for g in self._games:
-            gc.addItem(f"{g['away']['abbr']} @ {g['home']['abbr']}", g["id"])
-        self._lt.setCellWidget(row, 0, gc)
-
-        # TEAM combo
-        tc = QComboBox();
-        tc.setFont(bb(10));
-        tc.setStyleSheet(combo_ss())
-        tc.addItem("N/A")
-        self._lt.setCellWidget(row, 1, tc)
-
-        # PLAYER combo
-        pc = QComboBox();
-        pc.setFont(bb(10));
-        pc.setStyleSheet(combo_ss())
-        pc.addItem("N/A")
-        self._lt.setCellWidget(row, 2, pc)
-
-        # O/U combo
-        oc = QComboBox();
-        oc.setFont(bb(10));
-        oc.setStyleSheet(combo_ss())
-        oc.addItems(["OVER", "UNDER", "N/A"])
-        self._lt.setCellWidget(row, 3, oc)
-
-        # LINE input
-        li = QLineEdit();
-        li.setFont(bb(10));
-        li.setStyleSheet(input_ss())
-        li.setPlaceholderText("e.g. 249.5")
-        self._lt.setCellWidget(row, 4, li)
-
-        # MARKET combo
-        mc = QComboBox();
-        mc.setFont(bb(10));
-        mc.setStyleSheet(combo_ss())
-        mc.addItems(MARKETS)
-        self._lt.setCellWidget(row, 5, mc)
-
-        # ODDS input
-        oi = QLineEdit();
-        oi.setFont(bb(10));
-        oi.setStyleSheet(input_ss())
-        oi.setPlaceholderText("-115")
-        self._lt.setCellWidget(row, 6, oi)
-
-        # Store widget refs so auto-save can read them
-        self._pending_widgets = {"gc": gc, "tc": tc, "pc": pc,
-                                 "oc": oc, "li": li, "mc": mc, "oi": oi}
-
-        # CANCEL button (✕) — discards the pending row without saving
-        sv = QPushButton("✕")
-        sv.setFont(bb(11))
-        sv.setStyleSheet(f"QPushButton{{background:transparent;color:{RED};border:none;padding:2px;}}"
-                         f"QPushButton:hover{{color:white;}}")
-        self._lt.setCellWidget(row, 7, sv)
-
-        def populate_teams(idx):
-            if idx < 0 or idx >= len(self._games):
-                return
-            g = self._games[idx]
-            tc.blockSignals(True)
-            tc.clear()
-            tc.addItem("N/A")
-            tc.addItem(g["away"]["abbr"])
-            tc.addItem(g["home"]["abbr"])
-            tc.blockSignals(False)
-            pc.clear();
-            pc.addItem("N/A")
-
-        def populate_players(t_idx):
-            gi = gc.currentIndex()
-            if gi < 0 or gi >= len(self._games) or t_idx <= 0:
-                pc.clear();
-                pc.addItem("N/A")
-                return
-            g = self._games[gi]
-            abbr = tc.currentText()
-            tid = g["away"]["id"] if abbr == g["away"]["abbr"] else g["home"]["id"]
-            roster = fetch_roster(g["id"], tid)
-            pc.clear();
-            pc.addItem("N/A")
-            for p in roster:
-                pc.addItem(p["name"])
-
-        gc.currentIndexChanged.connect(populate_teams)
-        tc.currentIndexChanged.connect(populate_players)
-        if self._games:
-            populate_teams(0)
-
-        def cancel_leg():
-            self._lt.removeRow(row)
-            self._pending_row = False
-            self._pending_widgets = {}
-            if self._lt.rowCount() == 0:
-                self._el.setVisible(True)
-
-        sv.clicked.connect(cancel_leg)
+        if not self._parlay_id:
+            self._parlay_id, _, _, _ = self._ensure_parlay()
+        self._insert_row()
 
     def _submit(self):
-        # Save any pending inline row before submitting
-        if self._pending_row:
-            self._save_pending()
-        if not self._legs or not self._parlay_id:
+        if not self._parlay_id:
+            self._parlay_id, _, _, _ = self._ensure_parlay()
+        self._persist()
+        if not self._rows:
             return
         try:
             stake = float(self._sk.text() or 0)
@@ -2975,6 +3067,10 @@ class BetEntryTab(QWidget):
         conn.commit()
         conn.close()
         self.submitted.emit()
+        self._parlay_id = None
+        self._clear_table()
+        self._sk.setText("50.00")
+        self._bo.setText("0")
         self._load_parlay()
 
 
