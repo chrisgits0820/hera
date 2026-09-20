@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.1.8"
+VERSION = "4.1.9"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -667,6 +667,8 @@ class LoadingScreen(QWidget):
         self.setFixedSize(520, 680)
         self.setStyleSheet(f"background:#1a1a1a; color:{TEXT};")
         self._pct = 0
+        self._pending = None
+        self._started_at = time.monotonic()
         self._build()
         self._worker = BootWorker()
         self._worker.progress.connect(self._on_progress)
@@ -676,6 +678,7 @@ class LoadingScreen(QWidget):
     def start(self):
         self._center()
         self.show()
+        self._started_at = time.monotonic()
         self._worker.start()
 
     def _center(self):
@@ -747,6 +750,12 @@ class LoadingScreen(QWidget):
         self._set_glow(pct)
 
     def _on_ready(self, games, week_num):
+        self._pending = (games, week_num)
+        remain_ms = max(0, int((30 - (time.monotonic() - self._started_at)) * 1000))
+        QTimer.singleShot(remain_ms, self._finish)
+
+    def _finish(self):
+        games, week_num = self._pending if self._pending is not None else ([], None)
         self.ready.emit(games, week_num)
         self.close()
 
