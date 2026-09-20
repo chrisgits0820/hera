@@ -13,7 +13,6 @@ import sqlite3
 import requests
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 
 from PySide6.QtWidgets import (
@@ -32,7 +31,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.26"
+VERSION = "4.3.27"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -434,7 +433,6 @@ def db():
 # ESPN HELPERS
 # ─────────────────────────────────────────────
 def espn_get(url, params=None):
-    """ESPN unofficial APIs. Do not send a browser UA — Akamai 403s those on summary."""
     try:
         r = requests.get(url, params=params, timeout=4)
         r.raise_for_status()
@@ -504,20 +502,7 @@ def fetch_scoreboard(week=None, seasontype=2):
 
 
 def fetch_summary(game_id):
-    data = espn_get(ESPN_SUMMARY, params={"event": game_id})
-    if data:
-        return data
-    data = espn_get(
-        "https://site.web.api.espn.com/apis/site/v2/sports/football/nfl/summary",
-        params={"event": game_id})
-    if data:
-        return data
-    wrap = espn_get(
-        "https://cdn.espn.com/core/nfl/boxscore",
-        params={"xhr": 1, "gameId": game_id})
-    if isinstance(wrap, dict):
-        return wrap.get("gamepackageJSON") or wrap
-    return None
+    return espn_get(ESPN_SUMMARY, params={"event": game_id})
 
 
 def fetch_linescores(game_id, team_id):
@@ -1100,22 +1085,13 @@ class BootWorker(QThread):
             n_teams = max(1, len(team_ids))
             player_count = 0
             est_players = n_teams * 53
-
-            def _one(tid):
+            for i, tid in enumerate(team_ids, 1):
+                self.progress.emit(f"LOADING TEAMS  {i} / {n_teams}")
                 g = teams[tid]
-                return fetch_roster(g["id"], tid) or []
-
-            with ThreadPoolExecutor(max_workers=8) as ex:
-                futs = [ex.submit(_one, tid) for tid in team_ids]
-                for i, fut in enumerate(as_completed(futs), 1):
-                    try:
-                        roster = fut.result(timeout=12) or []
-                    except Exception:
-                        roster = []
-                    player_count += len(roster)
-                    self.progress.emit(f"LOADING TEAMS  {i} / {n_teams}")
-                    self.progress.emit(
-                        f"LOADING PLAYERS  {player_count} / {est_players}")
+                roster = fetch_roster(g["id"], tid) or []
+                player_count += len(roster)
+                self.progress.emit(
+                    f"LOADING PLAYERS  {player_count} / {est_players}")
             self.progress.emit("SYSTEM READY")
             self.finished_ok.emit(games, week_num)
         except Exception:
@@ -2722,33 +2698,17 @@ class GameFetchWorker(QThread):
         game, week = self._game, self._week
         if not game:
             return
-        gid = game["id"]
-
-        def _call(fn, *a, **k):
-            try:
-                return fn(*a, **k)
-            except Exception:
-                traceback.print_exc()
-                return None
-
         try:
-            with ThreadPoolExecutor(max_workers=5) as ex:
-                f_plays = ex.submit(_call, fetch_plays, gid)
-                f_sum = ex.submit(_call, fetch_summary, gid)
-                f_sb = ex.submit(_call, fetch_scoreboard, week)
-                f_als = ex.submit(_call, fetch_linescores, gid, game["away"]["id"])
-                f_hls = ex.submit(_call, fetch_linescores, gid, game["home"]["id"])
-                plays = f_plays.result() or []
-                summary = f_sum.result()
-                board = f_sb.result()
-                fresh, _wk = board if board else ([], None)
-                away_ls = f_als.result() or {}
-                home_ls = f_hls.result() or {}
+            plays = fetch_plays(game["id"]) or []
+            summary = fetch_summary(game["id"])
+            fresh, _ = fetch_scoreboard(week=week)
             current = game
             for g in (fresh or []):
                 if str(g.get("id")) == str(game.get("id")):
                     current = g
                     break
+            away_ls = fetch_linescores(current["id"], current["away"]["id"])
+            home_ls = fetch_linescores(current["id"], current["home"]["id"])
             self.bundle.emit({
                 "game": current,
                 "summary": summary,
