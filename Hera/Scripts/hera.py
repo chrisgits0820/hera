@@ -2705,7 +2705,7 @@ class BetEntryTab(QWidget):
         self._bk.addItems(BOOKS)
         self._bk.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self._bk.setMinimumContentsLength(11)
-        self._bk.setFixedWidth(148)
+        self._bk.setFixedWidth(168)
         ig.addWidget(fl("BOOK"), 1, 0)
         ig.addWidget(self._bk, 1, 1)
         self._sk = QLineEdit("50.00")
