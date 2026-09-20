@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.2.0"
+VERSION = "4.2.1"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -657,32 +657,54 @@ class BootWorker(QThread):
             self.failed.emit(traceback.format_exc())
 
 
+def _tint_pixmap(pm, hex_color):
+    """Keep statue alpha; paint every opaque pixel as hex_color."""
+    if pm.isNull():
+        return pm
+    out = QPixmap(pm.size())
+    out.fill(Qt.transparent)
+    p = QPainter(out)
+    p.drawPixmap(0, 0, pm)
+    p.setCompositionMode(QPainter.CompositionMode_SourceIn)
+    p.fillRect(out.rect(), QColor(hex_color))
+    p.end()
+    return out
+
+
 class LoadingScreen(QWidget):
-    """Full-bleed splash matching the Hera statue mockup: no photo card."""
+    """Statue + HERA in #1cbe1c. Bar fills over max(30s, data fetch)."""
     ready = Signal(object, object)
+
+    HERA_HEX = GREEN  # #1cbe1c
+    MIN_HOLD = 30.0
 
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
-        self.setFixedSize(720, 960)
+        self.setFixedSize(720, 980)
         self.setStyleSheet("background:#0a0a0a;")
-        self._pct = 0
+        self._pct = 0.0
         self._status = "STARTING"
         self._pending = None
         self._started_at = time.monotonic()
+        self._data_done_at = None
         self._statue = QPixmap()
         src = LOGO_NOBG if os.path.exists(LOGO_NOBG) else LOGO_ORIG
         if os.path.exists(src):
-            self._statue = QPixmap(src)
+            self._statue = _tint_pixmap(QPixmap(src), self.HERA_HEX)
         self._worker = BootWorker()
-        self._worker.progress.connect(self._on_progress)
+        self._worker.progress.connect(self._on_boot_status)
         self._worker.finished_ok.connect(self._on_ready)
         self._worker.failed.connect(self._on_fail)
+        self._clock = QTimer(self)
+        self._clock.setInterval(50)
+        self._clock.timeout.connect(self._tick)
 
     def start(self):
         self._center()
         self.show()
         self._started_at = time.monotonic()
+        self._clock.start()
         self._worker.start()
 
     def _center(self):
@@ -692,73 +714,90 @@ class LoadingScreen(QWidget):
             self.move(geo.center().x() - self.width() // 2,
                       geo.center().y() - self.height() // 2)
 
+    def _total_secs(self, elapsed):
+        if self._data_done_at is None:
+            return max(self.MIN_HOLD, elapsed + 1.0)
+        return max(self.MIN_HOLD, self._data_done_at - self._started_at)
+
+    def _tick(self):
+        elapsed = time.monotonic() - self._started_at
+        total = self._total_secs(elapsed)
+        if self._data_done_at is None:
+            self._pct = min(95.0, 100.0 * elapsed / self.MIN_HOLD)
+        else:
+            self._pct = min(100.0, 100.0 * elapsed / total)
+            if elapsed >= total:
+                self._pct = 100.0
+                self._clock.stop()
+                self._finish()
+                return
+        self.update()
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.fillRect(self.rect(), QColor("#0a0a0a"))
 
-        # Statue — transparent PNG, no backing card
         if not self._statue.isNull():
-            sw, sh = 340, 454
-            pm = self._statue.scaled(sw, sh, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pm = self._statue.scaled(320, 428, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             x = (self.width() - pm.width()) // 2
-            y = 88
+            y = 64
             p.drawPixmap(x, y, pm)
             statue_bottom = y + pm.height()
         else:
-            statue_bottom = 520
+            statue_bottom = 500
 
-        t = max(0, min(100, self._pct)) / 100.0
-        # Glow from dim forest to neon as the bar fills (one word, all letters together)
-        r = int(8 + (39 - 8) * t)
-        g = int(32 + (255 - 32) * t)
-        b = int(8 + (60 - 8) * t)
-        glow = QColor(r, g, b)
+        hera_top = statue_bottom + 56
+        status_top = hera_top + 108
+        bar_y = status_top + 36
+        t = max(0.0, min(100.0, self._pct)) / 100.0
+        hera = QColor(self.HERA_HEX)
+
         word = "HERA"
-        font = bb(64)
-        p.setFont(font)
-        p.setPen(Qt.NoPen)
-        # soft glow passes
-        for spread, alpha in ((18, 28), (10, 55), (4, 90)):
-            c = QColor(glow)
-            c.setAlpha(int(alpha * t + 8))
+        font = bb(56)
+        try:
+            font.setLetterSpacing(QFont.AbsoluteSpacing, 10)
+        except Exception:
+            pass
+        # Glow of the same hex, then solid word — reserved band so it cannot hit status
+        hera_box = self.rect().adjusted(24, hera_top, -24, -(self.height() - hera_top - 96))
+        for grow, alpha in ((16, int(40 * t + 10)), (8, int(70 * t + 15))):
+            c = QColor(hera)
+            c.setAlpha(alpha)
             p.setPen(c)
-            p.drawText(self.rect().adjusted(0, statue_bottom + 28 - spread // 2, 0, 0),
-                       Qt.AlignHCenter | Qt.AlignTop, word)
-        p.setPen(glow)
-        p.drawText(self.rect().adjusted(0, statue_bottom + 36, 0, 0),
-                   Qt.AlignHCenter | Qt.AlignTop, word)
+            p.setFont(font)
+            p.drawText(hera_box.adjusted(-grow, -grow, grow, grow),
+                       Qt.AlignHCenter | Qt.AlignVCenter, word)
+        p.setPen(hera)
+        p.setFont(font)
+        p.drawText(hera_box, Qt.AlignHCenter | Qt.AlignVCenter, word)
 
-        # Status
-        p.setFont(bb(11))
-        p.setPen(QColor("#8a8a8a"))
-        p.drawText(self.rect().adjusted(0, statue_bottom + 130, 0, 0),
+        p.setFont(bb(10))
+        p.setPen(QColor("#888888"))
+        p.drawText(self.rect().adjusted(24, status_top, -24, 0),
                    Qt.AlignHCenter | Qt.AlignTop, self._status)
 
-        # Hairline progress bar
-        bar_y = statue_bottom + 168
-        margin = 48
+        margin = 56
         bar_w = self.width() - margin * 2
-        p.fillRect(margin, bar_y, bar_w, 2, QColor("#1c1c1c"))
-        fill = max(2, int(bar_w * t))
-        p.fillRect(margin, bar_y, fill, 2, QColor(GREEN))
+        p.fillRect(margin, bar_y, bar_w, 2, QColor("#222222"))
+        fill = max(1, int(bar_w * t))
+        p.fillRect(margin, bar_y, fill, 2, hera)
 
-        p.setFont(bb(9))
-        p.setPen(QColor("#555555"))
-        p.drawText(self.rect().adjusted(0, bar_y + 14, 0, 0),
+        p.setFont(bb(8))
+        p.setPen(QColor("#666666"))
+        p.drawText(self.rect().adjusted(0, bar_y + 16, 0, 0),
                    Qt.AlignHCenter | Qt.AlignTop, f"{int(self._pct)}%")
         p.end()
 
-    def _on_progress(self, pct, msg):
-        self._pct = pct
+    def _on_boot_status(self, _pct, msg):
         self._status = msg
         self.update()
 
     def _on_ready(self, games, week_num):
         self._pending = (games, week_num)
-        remain_ms = max(0, int((30 - (time.monotonic() - self._started_at)) * 1000))
-        QTimer.singleShot(remain_ms, self._finish)
+        self._data_done_at = time.monotonic()
+        self._status = "SYSTEM READY"
 
     def _finish(self):
         games, week_num = self._pending if self._pending is not None else ([], None)
@@ -767,6 +806,7 @@ class LoadingScreen(QWidget):
 
     def _on_fail(self, err):
         self._status = "STARTUP FAILED"
+        self._data_done_at = time.monotonic()
         self.update()
         print("FATAL ERROR:\n", err)
 
