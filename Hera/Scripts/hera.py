@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.19"
+VERSION = "4.3.20"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2717,79 +2717,66 @@ class _CenterCombo(QComboBox):
         v.setTextElideMode(Qt.ElideNone)
         v.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         v.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._full_items = None
+        v.installEventFilter(self)
         self._typed = ""
 
-    def clear(self):
-        self._full_items = None
+    def _clear_filter(self):
         self._typed = ""
-        super().clear()
-
-    def _capture_items(self):
-        if self._full_items is not None:
-            return
-        rows = []
+        v = self.view()
         for i in range(self.count()):
-            rows.append((self.itemText(i), self.itemData(i)))
-        self._full_items = rows
-
-    def _reload(self, rows, keep=None, silent=True):
-        self.blockSignals(True)
-        super().clear()
-        for text, data in rows:
-            super().addItem(text, data)
-        self.blockSignals(False)
-        if keep:
-            i = self.findText(keep)
-            if i >= 0:
-                if silent:
-                    self.blockSignals(True)
-                self.setCurrentIndex(i)
-                if silent:
-                    self.blockSignals(False)
-        elif self.count():
-            if silent:
-                self.blockSignals(True)
-            self.setCurrentIndex(0)
-            if silent:
-                self.blockSignals(False)
+            v.setRowHidden(i, False)
 
     def _apply_filter(self):
-        self._capture_items()
         q = self._typed.lower()
-        keep = self.currentText()
-        if not q:
-            self._reload(self._full_items, keep=keep)
-            return
-        matched = [(t, d) for t, d in self._full_items if t and q in t.lower()]
-        self._reload(matched, keep=keep)
+        v = self.view()
+        first = -1
+        for i in range(self.count()):
+            text = self.itemText(i) or ""
+            hide = bool(q) and q not in text.lower()
+            v.setRowHidden(i, hide)
+            if not hide and first < 0 and text:
+                first = i
+        if first >= 0:
+            self.setCurrentIndex(first)
+            idx = self.model().index(first, 0)
+            v.setCurrentIndex(idx)
+            v.scrollTo(idx)
 
-    def keyPressEvent(self, event):
+    def _handle_search_key(self, event):
         key = event.key()
         if key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down,
                    Qt.Key_Tab, Qt.Key_Backtab, Qt.Key_Return, Qt.Key_Enter,
                    Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown):
-            super().keyPressEvent(event)
-            return
+            return False
         if key == Qt.Key_Escape:
-            self._typed = ""
-            if self._full_items:
-                self._reload(self._full_items, keep=self.currentText())
+            self._clear_filter()
             self.hidePopup()
-            return
+            return True
         if key == Qt.Key_Backspace:
             if self._typed:
                 self._typed = self._typed[:-1]
                 if not self.view().isVisible():
                     self.showPopup()
                 self._apply_filter()
-            return
+            return True
         ch = event.text()
-        if ch and ch.isprintable() and not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
+        if ch and ch.isprintable() and not event.modifiers() & (
+                Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
             self._typed += ch
             if not self.view().isVisible():
                 self.showPopup()
             self._apply_filter()
+            return True
+        return False
+
+    def eventFilter(self, obj, ev):
+        if obj is self.view() and ev.type() == QEvent.KeyPress:
+            if self._handle_search_key(ev):
+                return True
+        return super().eventFilter(obj, ev)
+
+    def keyPressEvent(self, event):
+        if self._handle_search_key(event):
             return
         super().keyPressEvent(event)
 
@@ -2807,16 +2794,19 @@ class _CenterCombo(QComboBox):
         painter.drawText(rect, Qt.AlignCenter | Qt.TextSingleLine, text)
 
     def showPopup(self):
-        self._capture_items()
         super().showPopup()
+        QTimer.singleShot(0, self._place_popup)
+
+    def _place_popup(self):
+        if not self.view().isVisible():
+            return
         popup = self.view().window()
         if popup is None or popup is self.window():
             return
         popup.resize(self._POP_W, self._POP_H)
         origin = self.mapToGlobal(QPoint(0, self.height()))
         win = self.window()
-        top_left = win.mapToGlobal(QPoint(0, 0))
-        wg = QRect(top_left, win.size())
+        wg = QRect(win.mapToGlobal(QPoint(0, 0)), win.size())
         x = origin.x()
         y = origin.y()
         if x + self._POP_W > wg.right():
@@ -2830,11 +2820,8 @@ class _CenterCombo(QComboBox):
         popup.move(x, y)
 
     def hidePopup(self):
-        chosen = self.currentText()
         super().hidePopup()
-        self._typed = ""
-        if self._full_items:
-            self._reload(self._full_items, keep=chosen, silent=False)
+        self._clear_filter()
 
 
 class BetEntryTab(QWidget):
@@ -3031,19 +3018,20 @@ class BetEntryTab(QWidget):
     def eventFilter(self, obj, ev):
         if ev.type() == QEvent.KeyPress:
             chain = getattr(obj, "_leg_chain", None)
+            src = getattr(obj, "_leg_combo", obj)
             if chain:
                 key = ev.key()
                 if key in (Qt.Key_Right, Qt.Key_Left):
-                    if isinstance(obj, QLineEdit):
-                        pos = obj.cursorPosition()
-                        n = len(obj.text() or "")
-                        if key == Qt.Key_Right and pos < n and not obj.hasSelectedText():
+                    if isinstance(src, QLineEdit):
+                        pos = src.cursorPosition()
+                        n = len(src.text() or "")
+                        if key == Qt.Key_Right and pos < n and not src.hasSelectedText():
                             return super().eventFilter(obj, ev)
-                        if key == Qt.Key_Left and pos > 0 and not obj.hasSelectedText():
+                        if key == Qt.Key_Left and pos > 0 and not src.hasSelectedText():
                             return super().eventFilter(obj, ev)
-                    if isinstance(obj, QComboBox):
-                        obj.hidePopup()
-                    self._leg_focus(chain, obj, 1 if key == Qt.Key_Right else -1)
+                    if isinstance(src, QComboBox):
+                        src.hidePopup()
+                    self._leg_focus(chain, src, 1 if key == Qt.Key_Right else -1)
                     return True
         return super().eventFilter(obj, ev)
 
@@ -3296,6 +3284,10 @@ class BetEntryTab(QWidget):
         for w in chain:
             w._leg_chain = chain
             w.installEventFilter(self)
+            if isinstance(w, QComboBox):
+                w.view()._leg_chain = chain
+                w.view()._leg_combo = w
+                w.view().installEventFilter(self)
 
         gc.currentIndexChanged.connect(lambda i, rw=row: self._on_game(rw, i))
         pc.currentIndexChanged.connect(lambda i, rw=row: self._sync_team_from_player(rw, i))
