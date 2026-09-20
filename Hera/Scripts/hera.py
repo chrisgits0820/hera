@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.6"
+VERSION = "4.3.7"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -241,7 +241,7 @@ def btn_ss(bg=GREEN, fg="#000", r=0):
 def ghost_ss(fg=TEXT_DIM, r=0):
     return (f"QPushButton{{background:transparent;color:{fg};border:none;"
             f"padding:5px 14px;}}"
-            f"QPushButton:hover{{color:{TEXT};}}")
+            f"QPushButton:hover{{color:{GREEN if fg == GREEN else TEXT};}}")
 
 
 def nav_active_ss():
@@ -2649,10 +2649,6 @@ class BetEntryTab(QWidget):
         outer.setSpacing(10)
 
         hr = QHBoxLayout()
-        al = QLabel("ACTIVE PARLAY")
-        al.setFont(bb(16))
-        al.setStyleSheet(f"color:{GREEN}; letter-spacing:3px; background:transparent;")
-        hr.addWidget(al)
         hr.addStretch()
         self._pcb = QComboBox()
         self._pcb.setFont(bb(12))
@@ -2669,48 +2665,60 @@ class BetEntryTab(QWidget):
         ic.setStyleSheet(card_ss())
         wrap = QHBoxLayout(ic)
         wrap.setContentsMargins(16, 14, 16, 14)
-        wrap.setSpacing(40)
+        wrap.setSpacing(56)
         wrap.addStretch(1)
 
-        def hl(t):
-            l = QLabel(t)
+        def section_head(title):
+            box = QWidget()
+            box.setStyleSheet("background:transparent;")
+            vl = QVBoxLayout(box)
+            vl.setContentsMargins(0, 0, 0, 8)
+            vl.setSpacing(4)
+            l = QLabel(title)
             l.setFont(bb(10))
-            l.setStyleSheet(f"color:{TEXT_DIM}; letter-spacing:3px; background:transparent;")
-            return l
+            l.setStyleSheet("color:#ffffff; letter-spacing:3px; background:transparent;")
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFixedHeight(1)
+            line.setStyleSheet(f"color:{BORDER}; background:{BORDER}; border:none;")
+            vl.addWidget(l)
+            vl.addWidget(line)
+            return box
 
         def fl(t):
-            l = QLabel(t)
-            l.setFont(bb(11))
-            l.setFixedWidth(72)
-            l.setStyleSheet(f"color:{TEXT_DIM}; background:transparent;")
-            return l
+            lab = QLabel(t)
+            lab.setFont(bb(11))
+            lab.setStyleSheet("color:#ffffff; background:transparent;")
+            lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            return lab
 
         info = QWidget()
         info.setStyleSheet("background:transparent;")
-        info.setFixedWidth(340)
         ig = QGridLayout(info)
         ig.setContentsMargins(0, 0, 0, 0)
-        ig.setHorizontalSpacing(8)
+        ig.setHorizontalSpacing(6)
         ig.setVerticalSpacing(8)
-        ig.addWidget(hl("BET INFO"), 0, 0, 1, 2)
+        ig.addWidget(section_head("BET INFO"), 0, 0, 1, 2)
         self._bk = QComboBox()
         self._bk.setFont(bb(12))
         self._bk.setStyleSheet(combo_ss())
         self._bk.addItems(BOOKS)
-        self._bk.setFixedWidth(220)
+        self._bk.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self._bk.setMinimumContentsLength(11)
+        self._bk.setFixedWidth(148)
         ig.addWidget(fl("BOOK"), 1, 0)
         ig.addWidget(self._bk, 1, 1)
         self._sk = QLineEdit("50.00")
         self._sk.setFont(bb(12))
         self._sk.setStyleSheet(input_ss())
-        self._sk.setFixedWidth(120)
+        self._sk.setFixedWidth(72)
         self._sk.textChanged.connect(self._recalc)
         ig.addWidget(fl("STAKE"), 2, 0)
         ig.addWidget(self._sk, 2, 1)
         self._bo = QLineEdit("0")
         self._bo.setFont(bb(12))
         self._bo.setStyleSheet(input_ss())
-        self._bo.setFixedWidth(120)
+        self._bo.setFixedWidth(72)
         self._bo.textChanged.connect(self._recalc)
         ig.addWidget(fl("BOOST %"), 3, 0)
         ig.addWidget(self._bo, 3, 1)
@@ -2718,22 +2726,22 @@ class BetEntryTab(QWidget):
 
         calc = QWidget()
         calc.setStyleSheet("background:transparent;")
-        calc.setFixedWidth(280)
         cg = QGridLayout(calc)
         cg.setContentsMargins(0, 0, 0, 0)
-        cg.setHorizontalSpacing(10)
-        cg.setVerticalSpacing(4)
-        cg.addWidget(hl("CALCULATIONS"), 0, 0, 1, 2)
+        cg.setHorizontalSpacing(16)
+        cg.setVerticalSpacing(6)
+        cg.addWidget(section_head("CALCULATIONS"), 0, 0, 1, 2)
         self._cv = {}
-        for ri, (field, big) in enumerate([
-            ("LEGS", False), ("PARLAY ODDS", False), ("BOOSTED ODDS", False),
-            ("STAKE", False), ("TO WIN", False), ("PAYOUT", True)
+        for ri, field in enumerate([
+            "LEGS", "PARLAY ODDS", "BOOSTED ODDS", "STAKE", "TO WIN", "PAYOUT"
         ], start=1):
             cg.addWidget(fl(field), ri, 0)
             v = QLabel("—")
-            v.setFont(bb(14 if big else 12))
+            v.setFont(bb(13 if field == "PAYOUT" else 12))
             v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            v.setStyleSheet(f"color:{GREEN if big else TEXT}; background:transparent;")
+            v.setMinimumWidth(72)
+            color = GREEN if field == "PAYOUT" else "#ffffff"
+            v.setStyleSheet(f"color:{color}; background:transparent;")
             cg.addWidget(v, ri, 1)
             self._cv[field] = v
         wrap.addWidget(calc)
@@ -2780,12 +2788,12 @@ class BetEntryTab(QWidget):
         br = QHBoxLayout()
         ab = QPushButton("+ ADD LEG")
         ab.setFont(bb(12))
-        ab.setStyleSheet(ghost_ss())
+        ab.setStyleSheet(ghost_ss(GREEN))
         ab.setMinimumWidth(100)
         ab.clicked.connect(self._add_leg)
         nb = QPushButton("NEW PARLAY")
         nb.setFont(bb(12))
-        nb.setStyleSheet(ghost_ss())
+        nb.setStyleSheet(ghost_ss(GREEN))
         nb.setMinimumWidth(110)
         nb.clicked.connect(self._new_parlay)
         sb = QPushButton("SUBMIT PARLAY")
@@ -3228,7 +3236,7 @@ class ActiveLegsTab(QWidget):
         self._con.setStyleSheet(f"background:{BG};")
         self._il = QVBoxLayout(self._con)
         self._il.setContentsMargins(0, 0, 0, 0)
-        self._il.setSpacing(10)
+        self._il.setSpacing(8)
         self._il.addStretch()
         scroll.setWidget(self._con)
         lay.addWidget(scroll)
@@ -3289,16 +3297,17 @@ class ActiveLegsTab(QWidget):
         block.setStyleSheet("background:transparent;")
         bl = QVBoxLayout(block)
         bl.setContentsMargins(0, 0, 0, 0)
-        bl.setSpacing(2)
+        bl.setSpacing(0)
+        block.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
 
         hdr = QWidget()
-        hdr.setFixedHeight(34)
+        hdr.setFixedHeight(28)
         hdr.setStyleSheet(f"background:transparent; border:none; border-bottom:1px solid {BORDER};")
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(8, 0, 8, 0)
         hl.setSpacing(10)
 
-        def hl_lbl(t, color=TEXT_DIM):
+        def hl_lbl(t, color="#ffffff"):
             l = QLabel(t)
             l.setFont(bb(10))
             l.setStyleSheet(f"color:{color}; background:transparent; letter-spacing:0px;")
@@ -3330,7 +3339,7 @@ class ActiveLegsTab(QWidget):
         hl.addStretch()
         ab = QPushButton("ARCHIVE")
         ab.setFont(bb(9))
-        ab.setStyleSheet(ghost_ss(TEXT_DARK))
+        ab.setStyleSheet(ghost_ss("#ffffff"))
         ab.setFixedWidth(70)
         ab.clicked.connect(partial(self._archive, pid))
         hl.addWidget(ab)
@@ -3355,9 +3364,14 @@ class ActiveLegsTab(QWidget):
         tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         tbl.setSelectionMode(QTableWidget.NoSelection)
         tbl.setStyleSheet(table_ss())
-        tbl.setFixedHeight(32 * len(legs) + 34)
-        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         tbl.setShowGrid(False)
+        tbl.setFrameShape(QFrame.NoFrame)
+        tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        tbl.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        hh = tbl.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Stretch)
+        hh.setFixedHeight(22)
+        tbl.setFixedHeight(22 + 26 * max(len(legs), 1) + 2)
         tbl.setContentsMargins(0, 0, 0, 0)
 
         for r, leg in enumerate(legs):
@@ -3420,7 +3434,7 @@ class ActiveLegsTab(QWidget):
                 else:
                     it.setForeground(QColor(TEXT))
                 tbl.setItem(r, col, it)
-            tbl.setRowHeight(r, 28)
+            tbl.setRowHeight(r, 26)
 
         bl.addWidget(tbl)
         return block
@@ -3492,16 +3506,17 @@ class ArchiveTab(QWidget):
         block.setStyleSheet("background:transparent;")
         bl = QVBoxLayout(block)
         bl.setContentsMargins(0, 0, 0, 0)
-        bl.setSpacing(2)
+        bl.setSpacing(0)
+        block.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
 
         hdr = QWidget()
-        hdr.setFixedHeight(34)
+        hdr.setFixedHeight(28)
         hdr.setStyleSheet(f"background:transparent; border:none; border-bottom:1px solid {BORDER};")
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(8, 0, 8, 0)
         hl.setSpacing(10)
 
-        def hl_lbl(t, color=TEXT_DIM):
+        def hl_lbl(t, color="#ffffff"):
             l = QLabel(t)
             l.setFont(bb(10))
             l.setStyleSheet(f"color:{color}; background:transparent;")
@@ -3540,7 +3555,12 @@ class ArchiveTab(QWidget):
         tbl.setSelectionMode(QTableWidget.NoSelection)
         tbl.setStyleSheet(table_ss())
         tbl.setShowGrid(False)
-        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tbl.setFrameShape(QFrame.NoFrame)
+        tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        tbl.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        hh = tbl.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Stretch)
+        hh.setFixedHeight(22)
         if not legs:
             tbl.setRowCount(1)
             it = QTableWidgetItem("NO LEGS")
@@ -3551,7 +3571,7 @@ class ArchiveTab(QWidget):
             tbl.setSpan(0, 0, 1, len(cols))
             tbl.setFixedHeight(60)
         else:
-            tbl.setFixedHeight(32 * len(legs) + 34)
+            tbl.setFixedHeight(22 + 26 * len(legs) + 2)
             for r, leg in enumerate(legs):
                 vals = [
                     leg[3] if len(leg) > 3 else "—",
@@ -3569,7 +3589,7 @@ class ArchiveTab(QWidget):
                     it.setForeground(QColor(TEXT))
                     it.setTextAlignment(Qt.AlignCenter)
                     tbl.setItem(r, ci, it)
-                tbl.setRowHeight(r, 28)
+                tbl.setRowHeight(r, 26)
         bl.addWidget(tbl)
         return block
 
