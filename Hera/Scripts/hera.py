@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.7"
+VERSION = "4.3.8"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -198,16 +198,16 @@ def card_ss(r=0):
 
 
 def combo_ss():
-    return (f"QComboBox{{background:#2a2a2a;color:{TEXT};border:0.5px solid #444;"
-            f"border-radius:0px;padding:5px 10px;}}"
-            f"QComboBox::drop-down{{border:none;}}"
-            f"QComboBox QAbstractItemView{{background:#2a2a2a;color:{TEXT};"
+    return (f"QComboBox{{background:#2a2a2a;color:#ffffff;border:0.5px solid #444;"
+            f"border-radius:0px;padding:2px 6px;}}"
+            f"QComboBox::drop-down{{border:none;width:14px;}}"
+            f"QComboBox QAbstractItemView{{background:#2a2a2a;color:#ffffff;"
             f"border:1px solid {BORDER};selection-background-color:{GREEN_DIM};}}")
 
 
 def input_ss():
-    return (f"QLineEdit{{background:#2a2a2a;color:{TEXT};border:0.5px solid #444;"
-            f"border-radius:0px;padding:5px 10px;}}")
+    return (f"QLineEdit{{background:#2a2a2a;color:#ffffff;border:0.5px solid #444;"
+            f"border-radius:0px;padding:2px 6px;}}")
 
 
 def table_ss():
@@ -2645,37 +2645,19 @@ class BetEntryTab(QWidget):
 
     def _build(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 12, 16, 12)
-        outer.setSpacing(10)
+        outer.setContentsMargins(16, 8, 16, 12)
+        outer.setSpacing(0)
 
-        hr = QHBoxLayout()
-        hr.addStretch()
-        self._pcb = QComboBox()
-        self._pcb.setFont(bb(12))
-        self._pcb.setStyleSheet(combo_ss())
-        self._pcb.setFixedWidth(80)
-        for i in range(1, 11):
-            self._pcb.addItem(f"P{i}")
-        self._pcb.currentIndexChanged.connect(self._on_slot)
-        hr.addWidget(self._pcb)
-        outer.addLayout(hr)
-
-        # Centered compact BET INFO + CALCULATIONS
-        ic = QWidget()
-        ic.setStyleSheet(card_ss())
-        wrap = QHBoxLayout(ic)
-        wrap.setContentsMargins(16, 14, 16, 14)
-        wrap.setSpacing(56)
-        wrap.addStretch(1)
+        fs = 10  # same size as BET INFO / CALCULATIONS
 
         def section_head(title):
             box = QWidget()
             box.setStyleSheet("background:transparent;")
             vl = QVBoxLayout(box)
-            vl.setContentsMargins(0, 0, 0, 8)
-            vl.setSpacing(4)
+            vl.setContentsMargins(0, 0, 0, 0)
+            vl.setSpacing(3)
             l = QLabel(title)
-            l.setFont(bb(10))
+            l.setFont(bb(fs))
             l.setStyleSheet("color:#ffffff; letter-spacing:3px; background:transparent;")
             line = QFrame()
             line.setFrameShape(QFrame.HLine)
@@ -2687,48 +2669,47 @@ class BetEntryTab(QWidget):
 
         def fl(t):
             lab = QLabel(t)
-            lab.setFont(bb(11))
+            lab.setFont(bb(fs))
             lab.setStyleSheet("color:#ffffff; background:transparent;")
-            lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             return lab
 
         info = QWidget()
         info.setStyleSheet("background:transparent;")
         ig = QGridLayout(info)
         ig.setContentsMargins(0, 0, 0, 0)
-        ig.setHorizontalSpacing(6)
-        ig.setVerticalSpacing(8)
+        ig.setHorizontalSpacing(4)
+        ig.setVerticalSpacing(6)
         ig.addWidget(section_head("BET INFO"), 0, 0, 1, 2)
         self._bk = QComboBox()
-        self._bk.setFont(bb(12))
+        self._bk.setFont(bb(fs))
         self._bk.setStyleSheet(combo_ss())
         self._bk.addItems(BOOKS)
-        self._bk.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        self._bk.setMinimumContentsLength(11)
-        self._bk.setFixedWidth(168)
+        fm = self._bk.fontMetrics()
+        book_w = max(fm.horizontalAdvance(b) for b in BOOKS) + 22
+        self._bk.setFixedWidth(book_w)
+        self._bk.view().setMinimumWidth(book_w)
         ig.addWidget(fl("BOOK"), 1, 0)
         ig.addWidget(self._bk, 1, 1)
         self._sk = QLineEdit("50.00")
-        self._sk.setFont(bb(12))
+        self._sk.setFont(bb(fs))
         self._sk.setStyleSheet(input_ss())
-        self._sk.setFixedWidth(72)
+        self._sk.setFixedWidth(fm.horizontalAdvance("000.00") + 16)
         self._sk.textChanged.connect(self._recalc)
         ig.addWidget(fl("STAKE"), 2, 0)
         ig.addWidget(self._sk, 2, 1)
         self._bo = QLineEdit("0")
-        self._bo.setFont(bb(12))
+        self._bo.setFont(bb(fs))
         self._bo.setStyleSheet(input_ss())
-        self._bo.setFixedWidth(72)
+        self._bo.setFixedWidth(fm.horizontalAdvance("000.00") + 16)
         self._bo.textChanged.connect(self._recalc)
         ig.addWidget(fl("BOOST %"), 3, 0)
         ig.addWidget(self._bo, 3, 1)
-        wrap.addWidget(info)
 
         calc = QWidget()
         calc.setStyleSheet("background:transparent;")
         cg = QGridLayout(calc)
         cg.setContentsMargins(0, 0, 0, 0)
-        cg.setHorizontalSpacing(16)
+        cg.setHorizontalSpacing(14)
         cg.setVerticalSpacing(6)
         cg.addWidget(section_head("CALCULATIONS"), 0, 0, 1, 2)
         self._cv = {}
@@ -2737,74 +2718,81 @@ class BetEntryTab(QWidget):
         ], start=1):
             cg.addWidget(fl(field), ri, 0)
             v = QLabel("—")
-            v.setFont(bb(13 if field == "PAYOUT" else 12))
+            v.setFont(bb(fs))
             v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            v.setMinimumWidth(72)
             color = GREEN if field == "PAYOUT" else "#ffffff"
             v.setStyleSheet(f"color:{color}; background:transparent;")
             cg.addWidget(v, ri, 1)
             self._cv[field] = v
-        wrap.addWidget(calc)
-        wrap.addStretch(1)
-        outer.addWidget(ic)
 
-        # Leg table
-        lc = QWidget()
-        lc.setStyleSheet(card_ss())
-        lcl = QVBoxLayout(lc)
-        lcl.setContentsMargins(0, 0, 0, 0)
-        lcl.setSpacing(0)
+        self._pcb = QComboBox()
+        self._pcb.setFont(bb(fs))
+        self._pcb.setStyleSheet(combo_ss())
+        self._pcb.setFixedWidth(64)
+        for i in range(1, 11):
+            self._pcb.addItem(f"P{i}")
+        self._pcb.currentIndexChanged.connect(self._on_slot)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 10)
+        top.setSpacing(40)
+        top.setAlignment(Qt.AlignTop)
+        top.addWidget(info, 0, Qt.AlignTop)
+        top.addWidget(calc, 0, Qt.AlignTop)
+        top.addStretch(1)
+        top.addWidget(self._pcb, 0, Qt.AlignTop)
+        outer.addLayout(top)
+
         self._lt = QTableWidget(0, 8)
         self._lt.setHorizontalHeaderLabels(["GAME", "TEAM", "PLAYER", "O/U", "LINE", "MARKET", "ODDS", ""])
         self._lt.verticalHeader().setVisible(False)
         self._lt.setEditTriggers(QTableWidget.NoEditTriggers)
         self._lt.setSelectionMode(QTableWidget.NoSelection)
         self._lt.setStyleSheet(table_ss())
-        self._lt.setMinimumHeight(180)
         self._lt.setTextElideMode(Qt.ElideNone)
         self._lt.setWordWrap(False)
         self._lt.setShowGrid(False)
+        self._lt.setFrameShape(QFrame.NoFrame)
+        self._lt.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._lt.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._lt.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         hdr = self._lt.horizontalHeader()
-        hdr.setMinimumSectionSize(72)
+        hdr.setMinimumSectionSize(48)
         hdr.setStretchLastSection(False)
-        hdr.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        widths = [150, 90, 240, 100, 90, 130, 90, 40]
-        modes = [
-            QHeaderView.Interactive, QHeaderView.Interactive, QHeaderView.Stretch,
-            QHeaderView.Interactive, QHeaderView.Interactive, QHeaderView.Interactive,
-            QHeaderView.Interactive, QHeaderView.Fixed,
-        ]
-        for i, (w, m) in enumerate(zip(widths, modes)):
-            hdr.setSectionResizeMode(i, m)
+        hdr.setDefaultAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        hdr.setFixedHeight(26)
+        self._col_w = [118, 58, 168, 72, 64, 92, 64, 32]
+        for i, w in enumerate(self._col_w):
+            hdr.setSectionResizeMode(i, QHeaderView.Fixed)
             self._lt.setColumnWidth(i, w)
-        lcl.addWidget(self._lt)
-        self._el = QLabel("NO LEGS — CLICK + ADD LEG")
-        self._el.setFont(bb(11))
-        self._el.setAlignment(Qt.AlignCenter)
-        self._el.setStyleSheet(f"color:{TEXT_DIM}; padding:20px; background:transparent;")
-        lcl.addWidget(self._el)
-        outer.addWidget(lc)
+        self._lt.setFixedWidth(sum(self._col_w) + 2)
+        self._sync_table_height()
+
+        tr = QHBoxLayout()
+        tr.setContentsMargins(0, 0, 0, 0)
+        tr.addStretch(1)
+        tr.addWidget(self._lt)
+        tr.addStretch(1)
+        outer.addLayout(tr)
+        outer.addSpacing(5)
 
         br = QHBoxLayout()
+        br.setContentsMargins(0, 0, 0, 0)
+        br.setSpacing(8)
         ab = QPushButton("+ ADD LEG")
-        ab.setFont(bb(12))
+        ab.setFont(bb(fs))
         ab.setStyleSheet(ghost_ss(GREEN))
-        ab.setMinimumWidth(100)
         ab.clicked.connect(self._add_leg)
         nb = QPushButton("NEW PARLAY")
-        nb.setFont(bb(12))
+        nb.setFont(bb(fs))
         nb.setStyleSheet(ghost_ss(GREEN))
-        nb.setMinimumWidth(110)
         nb.clicked.connect(self._new_parlay)
         sb = QPushButton("SUBMIT PARLAY")
-        sb.setFont(bb(13))
+        sb.setFont(bb(fs))
         sb.setStyleSheet(btn_ss(GREEN, "#000"))
-        sb.setMinimumWidth(140)
         sb.clicked.connect(self._submit)
         br.addWidget(ab)
-        br.addSpacing(6)
         br.addWidget(nb)
-        br.addSpacing(8)
         br.addWidget(sb)
         br.addStretch()
         outer.addLayout(br)
@@ -2818,23 +2806,36 @@ class BetEntryTab(QWidget):
 
     def _cell_combo(self, items, min_chars=8):
         c = QComboBox()
-        c.setFont(bb(11))
+        c.setFont(bb(10))
         c.setStyleSheet(combo_ss())
-        c.setMinimumHeight(36)
-        c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        c.setMinimumContentsLength(min_chars)
+        c.setMinimumHeight(28)
         c.setMaxVisibleItems(18)
+        c.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         if items:
             c.addItems(items)
         return c
 
     def _cell_input(self, placeholder, text=""):
         e = QLineEdit(text)
-        e.setFont(bb(11))
+        e.setFont(bb(10))
         e.setStyleSheet(input_ss())
-        e.setMinimumHeight(36)
+        e.setMinimumHeight(28)
+        e.setAlignment(Qt.AlignCenter)
         e.setPlaceholderText(placeholder)
         return e
+
+    def _fit_popup(self, combo):
+        fm = combo.fontMetrics()
+        widest = combo.width()
+        for i in range(combo.count()):
+            widest = max(widest, fm.horizontalAdvance(combo.itemText(i)) + 28)
+        combo.view().setTextElideMode(Qt.ElideNone)
+        combo.view().setMinimumWidth(widest)
+
+    def _sync_table_height(self):
+        hh = self._lt.horizontalHeader().height() or 26
+        n = self._lt.rowCount()
+        self._lt.setFixedHeight(hh + 32 * n)
 
     def _set_combo(self, combo, value):
         if not value:
@@ -2874,7 +2875,7 @@ class BetEntryTab(QWidget):
     def _clear_table(self):
         self._rows = []
         self._lt.setRowCount(0)
-        self._el.setVisible(True)
+        self._sync_table_height()
 
     def _load_parlay(self, idx=None):
         self._loading = True
@@ -2957,6 +2958,7 @@ class BetEntryTab(QWidget):
         if saved_player:
             self._set_combo(pc, saved_player)
         pc.blockSignals(False)
+        self._fit_popup(pc)
 
     def _sync_team_from_player(self, row, idx):
         abbr = row["pc"].itemData(idx)
@@ -2973,22 +2975,23 @@ class BetEntryTab(QWidget):
 
     def _insert_row(self, data=None):
         data = data or {}
-        self._el.setVisible(False)
         r = self._lt.rowCount()
         self._lt.insertRow(r)
-        self._lt.setRowHeight(r, 48)
+        self._lt.setRowHeight(r, 32)
 
         gc = self._cell_combo([], 12)
         for g in self._games:
             gc.addItem(f"{g['away']['abbr']} @ {g['home']['abbr']}", g["id"])
+        self._fit_popup(gc)
         if data.get("game_display"):
             self._set_combo(gc, data["game_display"])
 
         tc = self._cell_combo(["N/A"], 4)
-        pc = self._cell_combo(["N/A"], 16)
+        pc = self._cell_combo(["N/A"], 8)
         oc = self._cell_combo(["OVER", "UNDER", "N/A"], 6)
         li = self._cell_input("249.5", data.get("line", ""))
         mc = self._cell_combo(MARKETS, 8)
+        self._fit_popup(mc)
         oi = self._cell_input("-115", data.get("odds", ""))
 
         row = {
@@ -3005,7 +3008,7 @@ class BetEntryTab(QWidget):
         self._lt.setCellWidget(r, 6, oi)
 
         xb = QPushButton("✕")
-        xb.setFont(bb(11))
+        xb.setFont(bb(10))
         xb.setFixedWidth(32)
         xb.setStyleSheet(
             f"QPushButton{{background:transparent;color:{RED};border:none;}}"
@@ -3027,6 +3030,7 @@ class BetEntryTab(QWidget):
             self._set_combo(mc, data["market"])
 
         self._rows.append(row)
+        self._sync_table_height()
         self._recalc()
         return row
 
@@ -3048,7 +3052,7 @@ class BetEntryTab(QWidget):
             conn.close()
         self._lt.removeRow(idx)
         self._rows.pop(idx)
-        self._el.setVisible(len(self._rows) == 0)
+        self._sync_table_height()
         self._recalc()
 
     def _collect_odds(self):
