@@ -21,18 +21,15 @@ from PySide6.QtWidgets import (
     QGridLayout, QLineEdit, QFrame, QSizePolicy, QDialog,
     QDialogButtonBox, QProgressBar, QSpacerItem
 )
-from PySide6.QtGui import (
-    QFont, QFontDatabase, QPixmap, QColor, QPalette, QPainter, QImage,
-    QPen, QPainterPath, QFontMetrics,
-)
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QSize
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect
+from PySide6.QtGui import QFont, QFontDatabase, QPixmap, QColor, QPalette, QPainter, QImage
 import re
 from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.10"
+VERSION = "4.3.11"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -245,46 +242,6 @@ def ghost_ss(fg=TEXT_DIM, r=0):
     return (f"QPushButton{{background:transparent;color:{fg};border:none;"
             f"padding:5px 14px;}}"
             f"QPushButton:hover{{color:{GREEN if fg == GREEN else TEXT};}}")
-
-
-class StrokeButton(QPushButton):
-    """Green (or black) glyphs with a black outline on each letter — no word box."""
-
-    def __init__(self, text, fg=GREEN, bg=None, box=False, parent=None):
-        super().__init__(text, parent)
-        self._fg = QColor(fg)
-        self._bg = QColor(bg) if bg else None
-        self._box = box
-        self.setFlat(True)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet("QPushButton{background:transparent;border:none;}")
-
-    def sizeHint(self):
-        fm = QFontMetrics(self.font())
-        pad_x = 18 if self._box else 10
-        pad_y = 12 if self._box else 8
-        return QSize(fm.horizontalAdvance(self.text()) + pad_x, fm.height() + pad_y)
-
-    def paintEvent(self, _event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setRenderHint(QPainter.TextAntialiasing)
-        r = self.rect()
-        if self._bg is not None:
-            p.fillRect(r, self._bg)
-            if self._box:
-                p.setPen(QPen(QColor("#000000"), 1))
-                p.setBrush(Qt.NoBrush)
-                p.drawRect(r.adjusted(0, 0, -1, -1))
-        font = self.font()
-        fm = QFontMetrics(font)
-        t = self.text()
-        x = (r.width() - fm.horizontalAdvance(t)) / 2.0
-        y = (r.height() + fm.ascent() - fm.descent()) / 2.0 - 1
-        path = QPainterPath()
-        path.addText(x, y, font, t)
-        p.strokePath(path, QPen(QColor("#000000"), 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        p.fillPath(path, self._fg)
 
 
 def nav_active_ss():
@@ -2691,7 +2648,7 @@ class BetEntryTab(QWidget):
 
     def _build(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 8, 16, 12)
+        outer.setContentsMargins(20, 8, 20, 12)
         outer.setSpacing(0)
 
         fs = 10  # same size as BET INFO / CALCULATIONS
@@ -2791,14 +2748,17 @@ class BetEntryTab(QWidget):
         alay.setContentsMargins(0, 0, 0, 0)
         alay.setSpacing(10)
         alay.setAlignment(Qt.AlignTop)
-        ab = StrokeButton("ADD LEG", GREEN)
+        ab = QPushButton("ADD LEG")
         ab.setFont(bb(fs))
+        ab.setStyleSheet(ghost_ss(GREEN))
         ab.clicked.connect(self._add_leg)
-        nb = StrokeButton("NEW PARLAY", GREEN)
+        nb = QPushButton("NEW PARLAY")
         nb.setFont(bb(fs))
+        nb.setStyleSheet(ghost_ss(GREEN))
         nb.clicked.connect(self._new_parlay)
-        sb = StrokeButton("SUBMIT PARLAY", "#000000", bg=GREEN, box=True)
+        sb = QPushButton("SUBMIT PARLAY")
         sb.setFont(bb(fs))
+        sb.setStyleSheet(btn_ss(GREEN, "#000"))
         sb.clicked.connect(self._submit)
         alay.addWidget(ab)
         alay.addWidget(nb)
@@ -2835,9 +2795,7 @@ class BetEntryTab(QWidget):
         tr = QHBoxLayout()
         tr.setContentsMargins(0, 0, 0, 0)
         tr.setSpacing(0)
-        tr.addStretch(1)
-        tr.addWidget(self._lt, 8)
-        tr.addStretch(1)
+        tr.addWidget(self._lt)
         outer.addLayout(tr)
         outer.addStretch()
         self._load_parlay()
@@ -2885,23 +2843,11 @@ class BetEntryTab(QWidget):
     def _layout_legs_table(self):
         if not hasattr(self, "_lt"):
             return
-        w = self._lt.width()
-        if w < 80:
-            w = max(400, int(max(self.width(), 1) * 0.80))
-        # Keep PLAYER the widest share; scale everything so columns never run off the widget.
-        shares = [1.4, 0.8, 2.4, 0.9, 0.9, 1.1, 0.85, 0.35]
-        total = sum(shares)
-        usable = max(80, w - 2)
-        widths = [max(36, int(usable * s / total)) for s in shares]
-        drift = usable - sum(widths)
-        widths[2] += drift
         hdr = self._lt.horizontalHeader()
-        for i, cw in enumerate(widths):
-            if i == 7:
-                hdr.setSectionResizeMode(i, QHeaderView.Fixed)
-            else:
-                hdr.setSectionResizeMode(i, QHeaderView.Interactive)
-            self._lt.setColumnWidth(i, max(cw, 1))
+        for i in range(7):
+            hdr.setSectionResizeMode(i, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(7, QHeaderView.Fixed)
+        self._lt.setColumnWidth(7, 40)
 
     def _sync_table_height(self):
         hh = self._lt.horizontalHeader().height() or 26
