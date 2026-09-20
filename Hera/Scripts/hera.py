@@ -29,7 +29,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.1"
+VERSION = "4.3.2"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -696,36 +696,58 @@ def _colorize_statue(pm, hex_color):
 
 
 def _statue_rim(pm, hex_color="#1cbe1c"):
-    """Soft #1cbe1c glow along the full silhouette, then the detailed statue on top."""
+    """Bright #1cbe1c rim around the entire statue outline — not a dark shadow."""
     if pm.isNull():
         return QPixmap()
-    pad = 32
-    sil = QPixmap(pm.size())
-    sil.fill(Qt.transparent)
-    sp = QPainter(sil)
-    sp.drawPixmap(0, 0, pm)
-    sp.setCompositionMode(QPainter.CompositionMode_SourceIn)
-    sp.fillRect(sil.rect(), QColor(hex_color))
-    sp.end()
-    # Downscale + upscale = cheap gaussian. Interior is covered by the statue.
-    tiny = sil.scaled(
-        max(12, sil.width() // 10),
-        max(12, sil.height() // 10),
-        Qt.IgnoreAspectRatio,
-        Qt.SmoothTransformation,
-    )
-    glow_w, glow_h = pm.width() + pad * 2, pm.height() + pad * 2
-    blurred = tiny.scaled(glow_w, glow_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-    out = QPixmap(glow_w, glow_h)
+    src = pm.toImage().convertToFormat(QImage.Format_ARGB32)
+    sw, sh = src.width(), src.height()
+    step = 2
+    mw, mh = (sw + step - 1) // step, (sh + step - 1) // step
+    rad = 6
+    pad = rad + 3
+    mw2, mh2 = mw + pad * 2, mh + pad * 2
+    mask = bytearray(mw2 * mh2)
+    for y in range(sh):
+        my = y // step + pad
+        row = my * mw2
+        for x in range(sw):
+            if (src.pixel(x, y) >> 24) > 80:
+                mask[row + (x // step + pad)] = 1
+    # dilate (max filter)
+    dil = bytearray(mw2 * mh2)
+    for y in range(mh2):
+        y0, y1 = max(0, y - rad), min(mh2, y + rad + 1)
+        for x in range(mw2):
+            x0, x1 = max(0, x - rad), min(mw2, x + rad + 1)
+            hit = False
+            for yy in range(y0, y1):
+                base = yy * mw2
+                if hit:
+                    break
+                for xx in range(x0, x1):
+                    if mask[base + xx]:
+                        hit = True
+                        break
+            if hit:
+                dil[y * mw2 + x] = 1
+    ring = QImage(mw2, mh2, QImage.Format_ARGB32)
+    ring.fill(0)
+    rgb = QColor(hex_color).rgb() & 0x00FFFFFF
+    for y in range(mh2):
+        base = y * mw2
+        for x in range(mw2):
+            if dil[base + x] and not mask[base + x]:
+                ring.setPixel(x, y, 0xE0000000 | rgb)  # strong green, not 38% mud
+    out_w = sw + pad * 2 * step
+    out_h = sh + pad * 2 * step
+    glow = QPixmap.fromImage(ring).scaled(
+        out_w, out_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    out = QPixmap(out_w, out_h)
     out.fill(Qt.transparent)
     p = QPainter(out)
     p.setRenderHint(QPainter.SmoothPixmapTransform)
-    p.setOpacity(0.38)
-    p.drawPixmap(0, 0, blurred)
-    p.setOpacity(0.22)
-    p.drawPixmap(2, 2, blurred)
-    p.setOpacity(1.0)
-    p.drawPixmap(pad, pad, pm)
+    p.drawPixmap(0, 0, glow)
+    p.drawPixmap(pad * step, pad * step, pm)
     p.end()
     return out
 
@@ -753,6 +775,7 @@ class LoadingScreen(QWidget):
         src = LOGO_NOBG if os.path.exists(LOGO_NOBG) else LOGO_ORIG
         if os.path.exists(src):
             colored = _colorize_statue(QPixmap(src), self.HERA_HEX)
+            colored = colored.scaledToHeight(560, Qt.SmoothTransformation)
             self._statue = _statue_rim(colored, self.HERA_HEX)
         self._worker = BootWorker()
         self._worker.progress.connect(self._on_boot_status)
