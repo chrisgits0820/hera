@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.27"
+VERSION = "4.3.28"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -47,17 +47,52 @@ CHARCOAL = "#262626"  # CSV APP BACKGROUND / EUTHENIA
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-TEAM_COLORS = {}  # lowercase full name -> (bg_hex, fg_hex)
+TEAM_COLORS = {}  # name/abbr -> (bg_hex, fg_hex)
 ROSTER_CACHE = {}  # team_id -> [{name, jersey, position, active}]
+
+# ESPN + book abbreviations keyed to CSV full names (CSV abbr block is misaligned).
+TEAM_NAME_ABBRS = {
+    "arizona cardinals": ("ARI", "ARZ"),
+    "atlanta falcons": ("ATL",),
+    "baltimore ravens": ("BAL",),
+    "buffalo bills": ("BUF",),
+    "carolina panthers": ("CAR",),
+    "chicago bears": ("CHI",),
+    "cincinnati bengals": ("CIN",),
+    "cleveland browns": ("CLE",),
+    "dallas cowboys": ("DAL",),
+    "denver broncos": ("DEN",),
+    "detroit lions": ("DET",),
+    "green bay packers": ("GB", "GNB", "GBP"),
+    "houston texans": ("HOU",),
+    "indianapolis colts": ("IND",),
+    "jacksonville jaguars": ("JAX", "JAC"),
+    "kansas city chiefs": ("KC", "KAN"),
+    "las vegas raiders": ("LV", "LVR", "OAK"),
+    "los angeles chargers": ("LAC", "SD"),
+    "los angeles rams": ("LAR", "LA", "STL"),
+    "miami dolphins": ("MIA",),
+    "minnesota vikings": ("MIN",),
+    "new england patriots": ("NE", "NWE"),
+    "new orleans saints": ("NO", "NOR"),
+    "new york giants": ("NYG",),
+    "new york jets": ("NYJ",),
+    "philadelphia eagles": ("PHI",),
+    "pittsburgh steelers": ("PIT",),
+    "san francisco 49ers": ("SF", "SFO"),
+    "seattle seahawks": ("SEA",),
+    "tampa bay buccaneers": ("TB", "TAM"),
+    "tennessee titans": ("TEN",),
+    "washington commanders": ("WAS", "WSH", "WFT"),
+}
 
 
 def load_team_colors():
-    """Load background/font hex from the Hera color CSV (full names + abbreviations)."""
+    """Load background/font hex from the CSV full-name table, then attach ESPN abbrs."""
     TEAM_COLORS.clear()
     if not os.path.exists(COLOR_CSV):
         return
     try:
-        section = "full"
         with open(COLOR_CSV, encoding="utf-8-sig") as f:
             for line in f:
                 parts = [p.strip() for p in line.strip().split(",")]
@@ -65,11 +100,9 @@ def load_team_colors():
                     continue
                 head = parts[0].upper()
                 if head.startswith("FULL TEAM"):
-                    section = "full"
                     continue
                 if head.startswith("TEAM ABBREVIATION"):
-                    section = "abbr"
-                    continue
+                    break
                 if head.startswith("OFFENSE") or head.startswith("DEFENSE"):
                     break
                 if len(parts) < 3:
@@ -78,8 +111,14 @@ def load_team_colors():
                 if not (bg.startswith("#") and fg.startswith("#")):
                     continue
                 raw = parts[0]
-                TEAM_COLORS[raw.lower()] = (bg, fg)
-                TEAM_COLORS[raw.upper()] = (bg, fg)
+                pair = (bg, fg)
+                TEAM_COLORS[raw] = pair
+                TEAM_COLORS[raw.lower()] = pair
+                TEAM_COLORS[raw.upper()] = pair
+                for ab in TEAM_NAME_ABBRS.get(raw.lower(), ()):
+                    TEAM_COLORS[ab] = pair
+                    TEAM_COLORS[ab.lower()] = pair
+                    TEAM_COLORS[ab.upper()] = pair
     except Exception:
         pass
 
@@ -93,13 +132,18 @@ def colors_for_team(team):
     t = str(team).strip()
     if t in ("", "N/A", "—", "-"):
         return None
-    return TEAM_COLORS.get(t) or TEAM_COLORS.get(t.upper()) or TEAM_COLORS.get(t.lower())
+    hit = TEAM_COLORS.get(t) or TEAM_COLORS.get(t.upper()) or TEAM_COLORS.get(t.lower())
+    if hit:
+        return hit
+    compact = t.replace(".", "").replace(" ", "")
+    return TEAM_COLORS.get(compact.upper()) or TEAM_COLORS.get(compact.lower())
 
 
 def tracking_table_ss():
     """Item backgrounds come from the delegate (team CSV colors), not CSS."""
     return (f"QTableWidget{{background:{CARD};color:{TEXT};border:none;"
             f"gridline-color:{BORDER2};outline:none;}}"
+            f"QTableWidget::item{{background:transparent;}}"
             f"QHeaderView::section{{background:{HDR_BG};color:{TEXT_MID};border:none;"
             f"border-bottom:0.5px solid {BORDER2};padding:4px 8px;font-size:10px;letter-spacing:2px;}}"
             f"QScrollBar:vertical{{background:{BG};width:5px;border:none;}}"
@@ -115,6 +159,8 @@ class _TeamRowDelegate(QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         team = index.sibling(index.row(), self._team_col).data(Qt.DisplayRole)
+        if team is None:
+            team = index.sibling(index.row(), self._team_col).data(Qt.UserRole)
         pair = colors_for_team(team)
         painter.save()
         painter.setClipRect(option.rect)
@@ -2171,6 +2217,8 @@ class ActiveBetsPanel(QWidget):
                 it = QTableWidgetItem(str(val))
                 it.setFont(bb(11))
                 it.setTextAlignment(Qt.AlignCenter)
+                if ci == 0:
+                    it.setData(Qt.UserRole, team)
                 if pair:
                     it.setBackground(QColor(pair[0]))
                     it.setForeground(QColor(pair[1]))
