@@ -2757,7 +2757,7 @@ class BetEntryTab(QWidget):
         self._lt.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._lt.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         hdr = self._lt.horizontalHeader()
-        hdr.setMinimumSectionSize(48)
+        hdr.setMinimumSectionSize(32)
         hdr.setStretchLastSection(False)
         hdr.setDefaultAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         hdr.setFixedHeight(26)
