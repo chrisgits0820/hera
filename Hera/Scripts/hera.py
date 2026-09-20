@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QTableWidget, QTableWidgetItem, QHeaderView,
     QGridLayout, QLineEdit, QFrame, QSizePolicy, QDialog,
     QDialogButtonBox, QProgressBar, QSpacerItem, QStyledItemDelegate,
-    QStyle, QStyleOptionComboBox
+    QStyle, QStyleOptionComboBox, QMessageBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent, QPoint
 from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QPixmap, QColor, QPalette, QPainter, QImage, QBrush
@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.24"
+VERSION = "4.3.25"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -282,6 +282,14 @@ def load_font():
 
 def bb(size=12):
     return QFont(_FF, round(size * 1.39))
+
+
+def text_px(font, text):
+    fm = QFontMetrics(font)
+    try:
+        return fm.horizontalAdvance(str(text))
+    except Exception:
+        return fm.boundingRect(str(text)).width()
 
 
 # ─────────────────────────────────────────────
@@ -945,19 +953,23 @@ def save_archive_bankroll_baseline(tot):
 
 
 def display_archive_bankroll():
-    raw = raw_archive_totals()
-    base = archive_bankroll_baseline()
-    wagers = max(0, raw["wagers"] - base["wagers"])
-    bet = max(0.0, round(raw["bet"] - base["bet"], 2))
-    won = max(0.0, round(raw["won"] - base["won"], 2))
-    lost = max(0.0, round(raw["lost"] - base["lost"], 2))
-    return {
-        "wagers": wagers,
-        "bet": bet,
-        "won": won,
-        "lost": lost,
-        "net": round(won - lost, 2),
-    }
+    try:
+        raw = raw_archive_totals()
+        base = archive_bankroll_baseline()
+        wagers = max(0, raw["wagers"] - base["wagers"])
+        bet = max(0.0, round(raw["bet"] - base["bet"], 2))
+        won = max(0.0, round(raw["won"] - base["won"], 2))
+        lost = max(0.0, round(raw["lost"] - base["lost"], 2))
+        return {
+            "wagers": wagers,
+            "bet": bet,
+            "won": won,
+            "lost": lost,
+            "net": round(won - lost, 2),
+        }
+    except Exception:
+        traceback.print_exc()
+        return {"wagers": 0, "bet": 0.0, "won": 0.0, "lost": 0.0, "net": 0.0}
 
 
 def empty_archive():
@@ -1394,7 +1406,7 @@ class NavBar(QWidget):
 
         self._bank = QWidget()
         self._bank.setStyleSheet("background:transparent; border:none;")
-        self._bank.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        self._bank.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         bl = QHBoxLayout(self._bank)
         bl.setContentsMargins(10, 0, 6, 0)
         bl.setSpacing(0)
@@ -1404,15 +1416,9 @@ class NavBar(QWidget):
         BET_BLUE = "#3d9eff"
         LOST_C = "#e06666"
         NET_Y = "#ffdc28"
-        BTN_SS = (
-            "QPushButton{{background:{bg};color:{fg};border:none;border-radius:0px;"
-            "padding:1px 7px;}}"
-            "QPushButton:hover{{background:{bg};}}"
-        )
 
         def lock(lbl):
-            fm = QFontMetrics(lbl.font())
-            lbl.setFixedWidth(fm.horizontalAdvance(lbl.text()) + 4)
+            lbl.setFixedWidth(text_px(lbl.font(), lbl.text()) + 4)
             lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         def stat_pair(key, color):
@@ -1463,17 +1469,20 @@ class NavBar(QWidget):
         self._reset_btn.setFont(STAT_F)
         self._reset_btn.setCursor(Qt.PointingHandCursor)
         self._reset_btn.setFixedHeight(18)
-        self._reset_btn.setStyleSheet(BTN_SS.format(bg=GREEN, fg="#000"))
+        self._reset_btn.setStyleSheet(
+            f"QPushButton{{background:{GREEN};color:#000;border:none;padding:1px 7px;}}"
+            f"QPushButton:hover{{background:{GREEN};}}")
         self._reset_btn.clicked.connect(self.reset_bankroll.emit)
         self._empty_btn = QPushButton("EMPTY")
         self._empty_btn.setFont(STAT_F)
         self._empty_btn.setCursor(Qt.PointingHandCursor)
         self._empty_btn.setFixedHeight(18)
-        self._empty_btn.setStyleSheet(BTN_SS.format(bg="#cc0000", fg="#ffffff"))
+        self._empty_btn.setStyleSheet(
+            "QPushButton{background:#cc0000;color:#ffffff;border:none;padding:1px 7px;}"
+            "QPushButton:hover{background:#cc0000;}")
         self._empty_btn.clicked.connect(self.empty_archive.emit)
-        fm = QFontMetrics(STAT_F)
-        self._reset_btn.setFixedWidth(fm.horizontalAdvance("RESET") + 16)
-        self._empty_btn.setFixedWidth(fm.horizontalAdvance("EMPTY") + 16)
+        self._reset_btn.setFixedWidth(text_px(STAT_F, "RESET") + 16)
+        self._empty_btn.setFixedWidth(text_px(STAT_F, "EMPTY") + 16)
         bl.addWidget(self._reset_btn)
         bl.addSpacing(5)
         bl.addWidget(self._empty_btn)
@@ -1513,8 +1522,7 @@ class NavBar(QWidget):
         )
         for lbl, text in pairs:
             lbl.setText(text)
-            fm = QFontMetrics(lbl.font())
-            lbl.setFixedWidth(fm.horizontalAdvance(text) + 4)
+            lbl.setFixedWidth(text_px(lbl.font(), text) + 4)
 
 
 # ─────────────────────────────────────────────
@@ -4365,9 +4373,10 @@ class HeraWindow(QMainWindow):
         self.setWindowTitle(f"HERA v{VERSION}")
         self.resize(1280, 820)
         self.setMinimumSize(640, 480)
-        self.setStyleSheet(f"background:{BG};")
+        self.setStyleSheet(f"background:{CHARCOAL};")
 
         central = QWidget()
+        central.setStyleSheet(f"background:{CHARCOAL};")
         self.setCentralWidget(central)
         ml = QVBoxLayout(central)
         ml.setContentsMargins(0, 0, 0, 0)
@@ -4468,9 +4477,17 @@ def main():
         app.setStyleSheet(f"* {{ font-family: '{_FF}'; }}")
 
         def open_main(games, week_num):
-            win = HeraWindow(games or [], week_num)
-            win.show()
-            app._win = win
+            try:
+                win = HeraWindow(games or [], week_num)
+                win.show()
+                app._win = win
+            except Exception:
+                traceback.print_exc()
+                box = QMessageBox()
+                box.setWindowTitle("HERA")
+                box.setText("HERA failed to open after the loading screen.")
+                box.setDetailedText(traceback.format_exc())
+                box.exec()
 
         splash = LoadingScreen()
         splash.ready.connect(open_main)
