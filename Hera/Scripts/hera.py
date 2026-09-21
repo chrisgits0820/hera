@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.29"
+VERSION = "4.3.30"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -59,6 +59,7 @@ def write_crash(text):
 
 TEAM_COLORS = {}  # name/abbr -> (bg_hex, fg_hex)
 ROSTER_CACHE = {}  # team_id -> [{name, jersey, position, active}]
+_LOGO_PM = {}  # (team_name, size) -> scaled QPixmap
 
 # ESPN + book abbreviations keyed to CSV full names (CSV abbr block is misaligned).
 TEAM_NAME_ABBRS = {
@@ -1020,15 +1021,21 @@ def empty_archive():
 
 
 def persist_leg_live(leg_id, live_val, status):
+    conn = None
     try:
         conn = db()
         conn.execute(
             "UPDATE legs SET live_stat=?, leg_status=? WHERE id=?",
             (str(live_val), status, leg_id))
         conn.commit()
-        conn.close()
     except Exception:
         pass
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def get_stat_group(summary, team_id, stat_name):
@@ -1070,10 +1077,16 @@ def logo_path(team_name):
 
 def load_logo(label, team_name, size=64):
     """Load team logo into a QLabel, scaled to size×size."""
-    path = logo_path(team_name)
-    if os.path.exists(path):
-        pm = QPixmap(path)
-        label.setPixmap(pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    key = (team_name, int(size))
+    pm = _LOGO_PM.get(key)
+    if pm is None:
+        path = logo_path(team_name)
+        if not os.path.exists(path):
+            return
+        src = QPixmap(path)
+        pm = src.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        _LOGO_PM[key] = pm
+    label.setPixmap(pm)
 
 
 # ─────────────────────────────────────────────
@@ -1259,6 +1272,8 @@ class LoadingScreen(QWidget):
         self._clock = QTimer(self)
         self._clock.setInterval(50)
         self._clock.timeout.connect(self._tick)
+        self._lock_scaled = QPixmap()
+        self._lock_wh = None
 
     def start(self):
         self._center()
@@ -1336,7 +1351,11 @@ class LoadingScreen(QWidget):
         t = max(0.0, min(100.0, self._pct)) / 100.0
 
         if not self._lock.isNull():
-            p.drawPixmap(0, 0, self._lock.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
+            if self._lock_wh != (w, h) or self._lock_scaled.isNull():
+                self._lock_scaled = self._lock.scaled(
+                    w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                self._lock_wh = (w, h)
+            p.drawPixmap(0, 0, self._lock_scaled)
         # Cover baked-in status/bar/% so live text is not sitting on the mockup labels
         cover_top = int(h * 0.855)
         p.fillRect(0, cover_top, w, h - cover_top, QColor(CHARCOAL))
@@ -1851,8 +1870,9 @@ class BoxScore(QWidget):
 
         card_lay.addWidget(q_hdr)
 
-        # ── Team rows (rebuilt in refresh()) ─────────────────────────
+        # ── Team rows (built once, numbers patched in refresh()) ─────
         self._row_widgets = []
+        self._row_cells = []
         for i in range(2):
             row = QWidget()
             row.setFixedHeight(53)
@@ -1864,6 +1884,7 @@ class BoxScore(QWidget):
             row_lay.setSpacing(0)
             card_lay.addWidget(row)
             self._row_widgets.append(row)
+            self._row_cells.append(None)
 
         outer.addWidget(card, 6)
         outer.addStretch(1)
@@ -1881,51 +1902,64 @@ class BoxScore(QWidget):
         return l
 
     def refresh(self, game, away_ls=None, home_ls=None):
-        for row_w, (team, ls) in zip(
-                self._row_widgets,
+        for i, (team, ls) in enumerate(
                 [(game["away"], away_ls or {}), (game["home"], home_ls or {})]):
+            row_w = self._row_widgets[i]
+            cells = self._row_cells[i]
+            if cells is None:
+                lay = row_w.layout()
+                badge = QWidget()
+                badge.setFixedSize(127, 49)
+                badge.setStyleSheet(
+                    f"background:{team['color']}; border:none;")
+                bl = QHBoxLayout(badge)
+                bl.setContentsMargins(0, 0, 0, 0)
+                bl.setSpacing(0)
+                bl.addStretch()
+                logo_lbl = QLabel()
+                logo_lbl.setFixedSize(28, 28)
+                logo_lbl.setStyleSheet("background:transparent;")
+                load_logo(logo_lbl, team["name"], 28)
+                bl.addWidget(logo_lbl)
+                bl.addStretch()
+                lay.addWidget(badge)
 
-            lay = row_w.layout()
-            while lay.count():
-                item = lay.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
+                q_lbls = []
+                for q in range(1, 5):
+                    val = str(ls.get(q, "—")) if ls else "—"
+                    sc = QLabel(val)
+                    sc.setFont(bb(13))
+                    sc.setAlignment(Qt.AlignCenter)
+                    sc.setStyleSheet(f"color:{TEXT}; background:transparent;")
+                    sc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+                    sc.setFixedHeight(53)
+                    lay.addWidget(sc)
+                    q_lbls.append(sc)
 
-            # Colored badge
-            badge = QWidget()
-            badge.setFixedSize(127, 49)
-            badge.setStyleSheet(
-                f"background:{team['color']}; border:none;")
-            bl = QHBoxLayout(badge)
-            bl.setContentsMargins(0, 0, 0, 0)
-            bl.setSpacing(0)
-            bl.addStretch()
-            logo_lbl = QLabel()
-            logo_lbl.setFixedSize(28, 28)
-            logo_lbl.setStyleSheet("background:transparent;")
-            load_logo(logo_lbl, team["name"], 28)
-            bl.addWidget(logo_lbl)
-            bl.addStretch()
-            lay.addWidget(badge)
+                tot = QLabel(str(team["score"]))
+                tot.setFont(bb(15))
+                tot.setAlignment(Qt.AlignCenter)
+                tot.setFixedSize(113, 49)
+                tot.setStyleSheet(f"color:{TEXT}; background:transparent;")
+                lay.addWidget(tot)
+                self._row_cells[i] = {
+                    "team_id": team.get("id"),
+                    "badge": badge,
+                    "logo": logo_lbl,
+                    "q": q_lbls,
+                    "tot": tot,
+                }
+                continue
 
-            # Q1-Q4 scores
+            if cells.get("team_id") != team.get("id"):
+                cells["badge"].setStyleSheet(
+                    f"background:{team['color']}; border:none;")
+                load_logo(cells["logo"], team["name"], 28)
+                cells["team_id"] = team.get("id")
             for q in range(1, 5):
                 val = str(ls.get(q, "—")) if ls else "—"
-                sc = QLabel(val)
-                sc.setFont(bb(13))
-                sc.setAlignment(Qt.AlignCenter)
-                sc.setStyleSheet(f"color:{TEXT}; background:transparent;")
-                sc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                sc.setFixedHeight(53)
-                lay.addWidget(sc)
-
-            # Total
-            tot = QLabel(str(team["score"]))
-            tot.setFont(bb(15))
-            tot.setAlignment(Qt.AlignCenter)
-            tot.setFixedSize(113, 49)
-            tot.setStyleSheet(f"color:{TEXT}; background:transparent;")
-            lay.addWidget(tot)
+                cells["q"][q - 1].setText(val)
+            cells["tot"].setText(str(team["score"]))
 
 
 # ─────────────────────────────────────────────
@@ -2224,9 +2258,13 @@ class ActiveBetsPanel(QWidget):
 
             pair = colors_for_team(team)
             for ci, val in enumerate(vals):
-                it = QTableWidgetItem(str(val))
-                it.setFont(bb(11))
-                it.setTextAlignment(Qt.AlignCenter)
+                it = self._tbl.item(r, ci)
+                if it is None:
+                    it = QTableWidgetItem()
+                    it.setFont(bb(11))
+                    it.setTextAlignment(Qt.AlignCenter)
+                    self._tbl.setItem(r, ci, it)
+                it.setText(str(val))
                 if ci == 0:
                     it.setData(Qt.UserRole, team)
                 if pair:
@@ -2235,7 +2273,6 @@ class ActiveBetsPanel(QWidget):
                 else:
                     it.setForeground(QColor(
                         GREEN if is_won else RED if is_lost else TEXT))
-                self._tbl.setItem(r, ci, it)
 
             self._tbl.setRowHeight(r, 28)
 
@@ -2311,6 +2348,9 @@ class StatSection(QWidget):
             w = item.widget()
             if w:
                 w.deleteLater()
+        self._fp_struct = None
+        self._fp_vals = None
+        self._refs = None
 
     def _row_widget(self, bg, h=32):
         w = QWidget()
@@ -2340,16 +2380,75 @@ class StatSection(QWidget):
 
     # ── populate ─────────────────────────────────────────────────
 
+    def _row_from_athlete(self, ae, pos_lookup):
+        ath = ae.get("athlete", {})
+        jersey = ath.get("jersey", "")
+        pos_obj = ath.get("position", {})
+        pos = pos_obj.get("abbreviation", "") if isinstance(pos_obj, dict) else ""
+        if not pos and pos_lookup and jersey:
+            pos = pos_lookup.get(str(jersey).strip(), "")
+        if not pos:
+            pos = {"PASSING": "QB", "RUSHING": "RB", "RECEIVING": "WR"}.get(self._label, "")
+        name = ath.get("displayName", "")
+        stats = ae.get("stats", [])
+        key = (str(ath.get("id") or ""), str(jersey), str(name), str(pos))
+        return key, jersey, pos, name, stats
+
     def load(self, group, pos_lookup=None):
-        self._clear_rows()
         self._content_h = 39  # always at least the color header (_hdr_w height)
         if not group:
+            if getattr(self, "_fp_struct", None) == "empty":
+                return
+            self._clear_rows()
+            self._fp_struct = "empty"
             return
 
         labels = group.get("labels", group.get("keys", []))
         athletes = group.get("athletes", [])
         totals = group.get("totals", [])
-        stat_labels = labels[:7]
+        stat_labels = tuple(labels[:7])
+
+        packed = []
+        for ae in athletes:
+            s = ae.get("stats", [])
+            if s and any(v not in ("0", "0.0", "0/0", "—", "") for v in s):
+                packed.append(self._row_from_athlete(ae, pos_lookup))
+
+        tot_vals = tuple(
+            str(val) if val is not None else "—"
+            for val in (totals[:len(stat_labels)] if totals else ()))
+        struct = (stat_labels, tuple(p[0] for p in packed), bool(totals))
+        vals = (tuple(tuple(
+            str(v) if v is not None else "—"
+            for v in p[4][:len(stat_labels)]) for p in packed), tot_vals)
+
+        refs = getattr(self, "_refs", None)
+        if struct == getattr(self, "_fp_struct", None) and refs:
+            if vals == getattr(self, "_fp_vals", None):
+                return
+            for pref, p in zip(refs["players"], packed):
+                _key, jersey, pos, name, stats = p
+                if pref["jersey"].text() != str(jersey):
+                    pref["jersey"].setText(str(jersey))
+                if pref["name"].text() != str(name):
+                    pref["name"].setText(str(name))
+                for lbl, val in zip(pref["stats"], stats[:len(stat_labels)]):
+                    txt = str(val) if val is not None else "—"
+                    if lbl.text() != txt:
+                        lbl.setText(txt)
+            if refs.get("totals") and totals:
+                for lbl, val in zip(refs["totals"], totals[:len(stat_labels)]):
+                    txt = str(val) if val is not None else "—"
+                    if lbl.text() != txt:
+                        lbl.setText(txt)
+            self._fp_vals = vals
+            self._content_h = 39 + 32 + 32 * len(packed) + (28 if totals else 0)
+            return
+
+        self._clear_rows()
+        self._fp_struct = struct
+        self._fp_vals = vals
+        self._content_h = 39
 
         # Column-header row
         hdr_w, hdr_lay = self._row_widget(HDR_BG, h=32)
@@ -2364,35 +2463,13 @@ class StatSection(QWidget):
         self._rows_lay.addWidget(hdr_w)
         self._content_h += 32
 
-        # Filter athletes with non-zero stats
-        valid = []
-        for ae in athletes:
-            s = ae.get("stats", [])
-            if s and any(v not in ("0", "0.0", "0/0", "—", "") for v in s):
-                valid.append(ae)
-
-        # Player rows
-        for ae in valid:
-            ath = ae.get("athlete", {})
-            jersey = ath.get("jersey", "")
-            pos_obj = ath.get("position", {})
-            pos = pos_obj.get("abbreviation", "") if isinstance(pos_obj, dict) else ""
-            # Fallback 1: ESPN boxscore athletes often omit position — look up from roster
-            if not pos and pos_lookup and jersey:
-                pos = pos_lookup.get(str(jersey).strip(), "")
-            # Fallback 2: infer from stat section so badge always shows something
-            if not pos:
-                pos = {"PASSING": "QB", "RUSHING": "RB", "RECEIVING": "WR"}.get(self._label, "")
-            name = ath.get("displayName", "")
-            stats = ae.get("stats", [])
-
+        player_refs = []
+        for _key, jersey, pos, name, stats in packed:
             row_w, row_lay = self._row_widget(BG, h=32)
 
-            # Jersey #
-            row_lay.addWidget(self._cell(jersey, self.W_NUM, bb(10), TEXT_DARK))
+            jersey_lbl = self._cell(jersey, self.W_NUM, bb(10), TEXT_DARK)
+            row_lay.addWidget(jersey_lbl)
 
-            # POS badge — BadgeLabel paints its own bg via QPainter,
-            # immune to parent stylesheet cascade
             pos_bg, pos_fg = POS_COLORS.get(pos, ("#252525", TEXT_DIM))
             pb = BadgeLabel(pos, pos_bg, pos_fg)
             pb.setFont(bb(9))
@@ -2407,7 +2484,6 @@ class StatSection(QWidget):
             pcl.addWidget(pb)
             row_lay.addWidget(pc)
 
-            # Player name
             nm = QLabel(name)
             nm.setFont(bb(10))
             nm.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
@@ -2415,16 +2491,18 @@ class StatSection(QWidget):
             nm.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             row_lay.addWidget(nm)
 
-            # Stat values
+            stat_lbls = []
             for val in stats[:len(stat_labels)]:
-                row_lay.addWidget(
-                    self._cell(str(val) if val is not None else "—",
-                               self.W_STAT, bb(10), TEXT))
+                slbl = self._cell(str(val) if val is not None else "—",
+                                  self.W_STAT, bb(10), TEXT)
+                row_lay.addWidget(slbl)
+                stat_lbls.append(slbl)
 
             self._rows_lay.addWidget(row_w)
             self._content_h += 32
+            player_refs.append({"jersey": jersey_lbl, "name": nm, "stats": stat_lbls})
 
-        # Totals row
+        tot_refs = []
         if totals:
             tot_w = QWidget()
             tot_w.setFixedHeight(28)
@@ -2432,16 +2510,18 @@ class StatSection(QWidget):
             tl = QHBoxLayout(tot_w)
             tl.setContentsMargins(0, 0, 0, 0)
             tl.setSpacing(0)
-            # fixed spacer matching # + POS so stat values line up with player rows
             tl.addWidget(self._cell("", self.W_NUM + self.W_POS, bb(9), TEXT_DARK))
             tl.addWidget(self._cell("TOTALS", 0, bb(9), TEXT_DARK,
                                     Qt.AlignVCenter | Qt.AlignLeft, expand=True))
             for val in totals[:len(stat_labels)]:
-                tl.addWidget(
-                    self._cell(str(val) if val is not None else "—",
-                               self.W_STAT, bb(9), TEXT_DARK))
+                tlbl = self._cell(str(val) if val is not None else "—",
+                                  self.W_STAT, bb(9), TEXT_DARK)
+                tl.addWidget(tlbl)
+                tot_refs.append(tlbl)
             self._rows_lay.addWidget(tot_w)
             self._content_h += 28
+
+        self._refs = {"players": player_refs, "totals": tot_refs}
 
 
 class StatBox(QWidget):
@@ -2559,20 +2639,39 @@ class PBPWidget(QWidget):
         """Pass a set of tracked player names for row highlighting."""
         self._bet_players = set(n.lower().strip() for n in player_names if n)
 
-    def _render(self):
-        while self._il.count() > 1:
-            item = self._il.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
+    def _filtered_plays(self):
         plays = self._plays
         if self._filter == "SCORING PLAYS":
             plays = [p for p in plays if p.get("scoring")]
         elif self._filter in ["Q1", "Q2", "Q3", "Q4"]:
             q = int(self._filter[1])
             plays = [p for p in plays if p.get("period") == q]
+        return plays[:60]
 
-        for play in plays[:60]:
+    def _play_fp(self, play):
+        return (
+            play.get("seq"),
+            play.get("clock"),
+            play.get("period"),
+            play.get("text"),
+            bool(play.get("scoring")),
+            bool(play.get("penalty")),
+            str(play.get("team_id") or ""),
+        )
+
+    def _render(self):
+        plays = self._filtered_plays()
+        fp = (self._filter, tuple(self._play_fp(p) for p in plays),
+              frozenset(self._bet_players))
+        if fp == getattr(self, "_fp", None) and self._il.count() > 1:
+            return
+        self._fp = fp
+        while self._il.count() > 1:
+            item = self._il.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        for play in plays:
             self._il.insertWidget(self._il.count() - 1, self._make_row(play))
 
     def _make_row(self, play):
@@ -3049,6 +3148,7 @@ class GameTrackerTab(QWidget):
 
     def _get_bet_players(self, game_id):
         """Return list of tracked player names for the current game."""
+        conn = None
         try:
             conn = db()
             c = conn.cursor()
@@ -3059,11 +3159,15 @@ class GameTrackerTab(QWidget):
                   AND p.status IN ('LIVE','PENDING')
                   AND l.player IS NOT NULL AND l.player != '' AND l.player != 'N/A'
             """, (game_id,))
-            players = [row[0] for row in c.fetchall()]
-            conn.close()
-            return players
+            return [row[0] for row in c.fetchall()]
         except Exception:
             return []
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 
 # ─────────────────────────────────────────────
@@ -4006,6 +4110,7 @@ class ActiveLegsTab(QWidget):
         self.setStyleSheet(f"background:{BG};")
         self._games = []
         self._scache = {}
+        self._al_fp = None
         self._build()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
@@ -4035,18 +4140,50 @@ class ActiveLegsTab(QWidget):
         self._games = games or []
 
     def refresh(self):
-        while self._il.count() > 1:
-            item = self._il.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
         conn = db()
         c = conn.cursor()
         c.execute("SELECT * FROM parlays WHERE status IN ('LIVE','PENDING') ORDER BY id DESC")
         parlays = c.fetchall()
         conn.close()
 
-        if not parlays:
+        blocks = []
+        any_live = False
+        for par in parlays:
+            if not par or len(par) < 7:
+                continue
+            pid = par[0]
+            conn = db()
+            c = conn.cursor()
+            c.execute("SELECT * FROM legs WHERE parlay_id=?", (pid,))
+            legs = c.fetchall()
+            conn.close()
+            if not legs:
+                continue
+            blocks.append((par, legs))
+            for leg in legs:
+                if len(leg) < 3:
+                    continue
+                gi = next((g for g in self._games if str(g["id"]) == str(leg[2])), None)
+                if gi and gi.get("state") == "in":
+                    any_live = True
+
+        fp = tuple(
+            (par[0], par[5],
+             tuple((leg[0], str(leg[10] if len(leg) > 10 else ""),
+                    str(leg[11] if len(leg) > 11 else "")) for leg in legs))
+            for par, legs in blocks
+        )
+        if (not any_live and fp == getattr(self, "_al_fp", None)
+                and self._il.count() > 1):
+            return
+        self._al_fp = fp
+
+        while self._il.count() > 1:
+            item = self._il.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not blocks:
             el = QLabel("NO ACTIVE LEGS")
             el.setFont(bb(13))
             el.setAlignment(Qt.AlignCenter)
@@ -4054,17 +4191,8 @@ class ActiveLegsTab(QWidget):
             self._il.insertWidget(0, el)
             return
 
-        for par in parlays:
-            if not par or len(par) < 7:
-                continue
-            pid, label, book, stake, boost, status, created = par[:7]
-            conn = db()
-            c = conn.cursor()
-            c.execute("SELECT * FROM legs WHERE parlay_id=?", (pid,))
-            legs = c.fetchall()
-            conn.close()
-            if legs:
-                self._il.insertWidget(self._il.count() - 1, self._make_block(par, legs))
+        for par, legs in blocks:
+            self._il.insertWidget(self._il.count() - 1, self._make_block(par, legs))
 
     def _make_block(self, par, legs):
         pid, label, book, stake, boost, status, created = par
