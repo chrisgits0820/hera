@@ -15,16 +15,15 @@ import time
 import traceback
 from functools import partial
 
-# PyCharm (and other IDEs) inject QT_PLUGIN_PATH from the IDE / another
-# project. Same python.exe then paints a blank white window. CMD does not.
-for _k in (
-    "QT_PLUGIN_PATH",
-    "QT_QPA_PLATFORM_PLUGIN_PATH",
-    "QT_QPA_PLATFORM",
-    "QML2_IMPORT_PATH",
-    "QT_API",
-):
+# PyCharm injects Qt paths from the IDE / other projects (white main window).
+# Do not leave QT_PLUGIN_PATH empty — Windows then cannot decode PNG and the
+# splash lock (statue + HERA) disappears.
+for _k in ("QT_QPA_PLATFORM_PLUGIN_PATH", "QML2_IMPORT_PATH", "QT_API"):
     os.environ.pop(_k, None)
+import PySide6
+_pyside_plugins = os.path.join(os.path.dirname(PySide6.__file__), "plugins")
+if os.path.isdir(_pyside_plugins):
+    os.environ["QT_PLUGIN_PATH"] = _pyside_plugins
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -42,7 +41,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.32"
+VERSION = "4.3.33"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -1298,8 +1297,6 @@ class LoadingScreen(QWidget):
         self._clock = QTimer(self)
         self._clock.setInterval(50)
         self._clock.timeout.connect(self._tick)
-        self._lock_scaled = QPixmap()
-        self._lock_wh = None
 
     def start(self):
         self._center()
@@ -1377,11 +1374,7 @@ class LoadingScreen(QWidget):
         t = max(0.0, min(100.0, self._pct)) / 100.0
 
         if not self._lock.isNull():
-            if self._lock_wh != (w, h) or self._lock_scaled.isNull():
-                self._lock_scaled = self._lock.scaled(
-                    w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-                self._lock_wh = (w, h)
-            p.drawPixmap(0, 0, self._lock_scaled)
+            p.drawPixmap(0, 0, self._lock.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
         # Cover baked-in status/bar/% so live text is not sitting on the mockup labels
         cover_top = int(h * 0.855)
         p.fillRect(0, cover_top, w, h - cover_top, QColor(CHARCOAL))
