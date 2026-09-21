@@ -15,6 +15,17 @@ import time
 import traceback
 from functools import partial
 
+# PyCharm (and other IDEs) inject QT_PLUGIN_PATH from the IDE / another
+# project. Same python.exe then paints a blank white window. CMD does not.
+for _k in (
+    "QT_PLUGIN_PATH",
+    "QT_QPA_PLATFORM_PLUGIN_PATH",
+    "QT_QPA_PLATFORM",
+    "QML2_IMPORT_PATH",
+    "QT_API",
+):
+    os.environ.pop(_k, None)
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QStackedWidget,
@@ -31,7 +42,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.31"
+VERSION = "4.3.32"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
