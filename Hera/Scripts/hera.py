@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.28"
+VERSION = "4.3.29"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -39,6 +39,7 @@ FONT_PATH = os.path.join(HERA_DIR, "BebasNeue-Regular.ttf")
 LOGO_ORIG = os.path.join(HERA_DIR, "hera_loading_screen.png")
 LOGO_NOBG = os.path.join(DATA_DIR, "hera_nobg.png")
 DB_PATH = os.path.join(DATA_DIR, "hera.db")
+CRASH_LOG = os.path.join(DATA_DIR, "hera_crash.log")
 LOGO_DIR = os.path.join(HERA_DIR, "NFL LOGOS")
 COLOR_CSV = os.path.join(DATA_DIR, "Hera_Color_Hex_Codes_v3_00b8.csv")
 AUDIO_PATH = os.path.join(HERA_DIR, "HERA_AUDIO.mp3")
@@ -46,6 +47,15 @@ SPLASH_LOCK = os.path.join(HERA_DIR, "hera_splash_lock.png")
 CHARCOAL = "#262626"  # CSV APP BACKGROUND / EUTHENIA
 
 os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def write_crash(text):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S  ") + text.rstrip() + "\n")
+    except Exception:
+        pass
 
 TEAM_COLORS = {}  # name/abbr -> (bg_hex, fg_hex)
 ROSTER_CACHE = {}  # team_id -> [{name, jersey, position, active}]
@@ -4470,6 +4480,12 @@ class HeraWindow(QMainWindow):
 # ─────────────────────────────────────────────
 def main():
     print(f"HERA v{VERSION} starting...")
+    def _hook(et, ev, tb):
+        err = "".join(traceback.format_exception(et, ev, tb))
+        print("FATAL ERROR:\n", err)
+        write_crash(err)
+        sys.__excepthook__(et, ev, tb)
+    sys.excepthook = _hook
     if sys.platform == "win32":
         try:
             import ctypes
@@ -4489,24 +4505,36 @@ def main():
         pal.setColor(QPalette.Button, QColor(CARD))
         pal.setColor(QPalette.Highlight, QColor(GREEN_DIM))
         pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+        pal.setColor(QPalette.Light, QColor(CHARCOAL))
+        pal.setColor(QPalette.Mid, QColor(CHARCOAL))
+        pal.setColor(QPalette.Dark, QColor(CHARCOAL))
         app.setPalette(pal)
         load_font()
         app.setFont(bb(12))
-        app.setStyleSheet(f"* {{ font-family: '{_FF}'; }}")
+        # Do not use "* { font-family }" — on Windows that wipes widget
+        # backgrounds and the main window paints white after splash.
+        app.setStyleSheet(
+            f"QMainWindow, QStackedWidget, QScrollArea {{ background:{CHARCOAL}; color:{TEXT}; }}"
+            f"QScrollArea > QWidget {{ background:{CHARCOAL}; }}"
+        )
 
         def open_main(games, week_num):
             try:
                 win = HeraWindow(games or [], week_num)
+                win.setAutoFillBackground(True)
                 win.show()
                 win.raise_()
                 win.activateWindow()
                 app._win = win
             except Exception:
-                traceback.print_exc()
+                err = traceback.format_exc()
+                print("FATAL ERROR:\n", err)
+                write_crash(err)
                 box = QMessageBox()
                 box.setWindowTitle("HERA")
                 box.setText("HERA failed to open after the loading screen.")
-                box.setDetailedText(traceback.format_exc())
+                box.setInformativeText(f"Wrote {CRASH_LOG}")
+                box.setDetailedText(err)
                 box.exec()
 
         splash = LoadingScreen()
@@ -4518,6 +4546,7 @@ def main():
     except Exception:
         print("FATAL ERROR:")
         traceback.print_exc()
+        write_crash(traceback.format_exc())
         try:
             input("Press Enter to close...")
         except Exception:
