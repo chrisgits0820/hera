@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.30"
+VERSION = "4.3.31"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -346,6 +346,21 @@ def text_px(font, text):
         return fm.horizontalAdvance(str(text))
     except Exception:
         return fm.boundingRect(str(text)).width()
+
+
+def force_charcoal(w, color=None):
+    """Windows ignores background-only stylesheets unless auto-fill + border:none."""
+    color = color or CHARCOAL
+    w.setAttribute(Qt.WA_StyledBackground, True)
+    w.setAutoFillBackground(True)
+    pal = w.palette()
+    qc = QColor(color)
+    for grp in (QPalette.Active, QPalette.Inactive, QPalette.Disabled):
+        pal.setColor(grp, QPalette.Window, qc)
+        pal.setColor(grp, QPalette.Base, qc)
+        pal.setColor(grp, QPalette.Button, qc)
+    w.setPalette(pal)
+    w.setStyleSheet(f"background-color:{color}; border:none;")
 
 
 # ─────────────────────────────────────────────
@@ -4529,10 +4544,10 @@ class HeraWindow(QMainWindow):
         self.setWindowTitle(f"HERA v{VERSION}")
         self.resize(1280, 820)
         self.setMinimumSize(640, 480)
-        self.setStyleSheet(f"background:{CHARCOAL};")
+        force_charcoal(self, CHARCOAL)
 
         central = QWidget()
-        central.setStyleSheet(f"background:{CHARCOAL};")
+        force_charcoal(central, CHARCOAL)
         self.setCentralWidget(central)
         ml = QVBoxLayout(central)
         ml.setContentsMargins(0, 0, 0, 0)
@@ -4545,7 +4560,7 @@ class HeraWindow(QMainWindow):
         ml.addWidget(self._nav)
 
         self._stack = QStackedWidget()
-        self._stack.setStyleSheet(f"background:{BG};")
+        force_charcoal(self._stack, BG)
 
         self._gt = GameTrackerTab()
         self._pbp_tab = PlayByPlayTab()
@@ -4560,14 +4575,16 @@ class HeraWindow(QMainWindow):
         self._be.submitted.connect(self._al.refresh)
 
         for tab in [self._gt, self._pbp_tab, self._be, self._al, self._ar]:
+            force_charcoal(tab, BG)
             sc = QScrollArea()
             sc.setWidget(tab)
             sc.setWidgetResizable(True)
             sc.setAlignment(Qt.AlignTop | Qt.AlignLeft)
             sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
             sc.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            sc.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
-            sc.viewport().setStyleSheet(f"background:{BG};")
+            sc.setStyleSheet(f"QScrollArea{{border:none;background-color:{BG};}}")
+            force_charcoal(sc, BG)
+            force_charcoal(sc.viewport(), BG)
             self._stack.addWidget(sc)
 
         ml.addWidget(self._stack)
@@ -4575,6 +4592,12 @@ class HeraWindow(QMainWindow):
         self._gt.set_games(games, week_num=week_num)
         self._be.set_games(games)
         self._al.set_games(games)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(CHARCOAL))
+        p.end()
+        super().paintEvent(event)
 
     def _on_tracker_update(self, game, summary, plays, away_ls, home_ls, bet_players):
         if game:
@@ -4636,23 +4659,28 @@ def main():
         pal.setColor(QPalette.Light, QColor(CHARCOAL))
         pal.setColor(QPalette.Mid, QColor(CHARCOAL))
         pal.setColor(QPalette.Dark, QColor(CHARCOAL))
+        for grp in (QPalette.Active, QPalette.Inactive, QPalette.Disabled):
+            pal.setColor(grp, QPalette.Window, QColor(CHARCOAL))
+            pal.setColor(grp, QPalette.WindowText, QColor(TEXT))
+            pal.setColor(grp, QPalette.Base, QColor(CARD))
+            pal.setColor(grp, QPalette.Button, QColor(CARD))
         app.setPalette(pal)
         load_font()
-        app.setFont(bb(12))
-        # Do not use "* { font-family }" — on Windows that wipes widget
-        # backgrounds and the main window paints white after splash.
+        # Do not app.setFont / "* { font-family }" — Windows then paints the
+        # main window white after splash. Widgets already call bb() locally.
         app.setStyleSheet(
-            f"QMainWindow, QStackedWidget, QScrollArea {{ background:{CHARCOAL}; color:{TEXT}; }}"
-            f"QScrollArea > QWidget {{ background:{CHARCOAL}; }}"
+            f"QMainWindow {{ background-color:{CHARCOAL}; color:{TEXT}; border:none; }}"
+            f"QStackedWidget, QScrollArea, QScrollArea > QWidget {{"
+            f" background-color:{BG}; color:{TEXT}; border:none; }}"
         )
 
         def open_main(games, week_num):
             try:
                 win = HeraWindow(games or [], week_num)
-                win.setAutoFillBackground(True)
                 win.show()
                 win.raise_()
                 win.activateWindow()
+                win.repaint()
                 app._win = win
             except Exception:
                 err = traceback.format_exc()
