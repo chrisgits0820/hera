@@ -24,6 +24,10 @@ import PySide6
 _pyside_plugins = os.path.join(os.path.dirname(PySide6.__file__), "plugins")
 if os.path.isdir(_pyside_plugins):
     os.environ["QT_PLUGIN_PATH"] = _pyside_plugins
+os.environ["QT_FFMPEG_DEBUG"] = "0"
+os.environ["QT_LOGGING_RULES"] = (
+    "qt.multimedia.*=false;qt.multimedia.ffmpeg.*=false;ffmpeg.*=false"
+)
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -41,7 +45,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.33"
+VERSION = "4.3.34"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -57,6 +61,32 @@ SPLASH_LOCK = os.path.join(HERA_DIR, "hera_splash_lock.png")
 CHARCOAL = "#262626"  # CSV APP BACKGROUND / EUTHENIA
 
 os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def _mute_ffmpeg_console():
+    """FFmpeg writes mp3 probe / MFT encoder lines to stderr. Not HERA prints."""
+    os.environ["QT_FFMPEG_DEBUG"] = "0"
+    try:
+        import glob
+        import ctypes
+        roots = [
+            os.path.dirname(PySide6.__file__),
+            os.path.join(os.path.dirname(PySide6.__file__), "ffmpeg"),
+            os.path.join(os.path.dirname(PySide6.__file__), "plugins", "multimedia"),
+        ]
+        seen = set()
+        for root in roots:
+            for path in glob.glob(os.path.join(root, "*avutil*.dll")):
+                if path in seen:
+                    continue
+                seen.add(path)
+                try:
+                    lib = ctypes.CDLL(path)
+                    lib.av_log_set_level(ctypes.c_int(-8))
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 def write_crash(text):
@@ -1312,6 +1342,7 @@ class LoadingScreen(QWidget):
             return
         try:
             from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+            _mute_ffmpeg_console()
             self._audio_out = QAudioOutput(self)
             self._audio_out.setVolume(1.0)
             self._player = QMediaPlayer(self)
