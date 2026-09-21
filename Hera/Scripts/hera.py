@@ -45,7 +45,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.34"
+VERSION = "4.3.35"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -227,6 +227,10 @@ class _TeamRowDelegate(QStyledItemDelegate):
         painter.drawText(
             option.rect, Qt.AlignCenter | Qt.TextSingleLine,
             "" if text is None else str(text))
+        if index.sibling(index.row(), 0).data(int(Qt.UserRole) + 1):
+            painter.fillRect(
+                option.rect.left(), option.rect.top(),
+                option.rect.width(), 2, QColor(BORDER))
         painter.restore()
 
 # ─────────────────────────────────────────────
@@ -1754,8 +1758,8 @@ class ScoreHeader(QWidget):
 
         center_lay.addWidget(self._live_dot)
         center_lay.addWidget(self._clock_lbl)
-        center_lay.addWidget(self._quarter_lbl)
         center_lay.addWidget(self._sit_lbl)
+        center_lay.addWidget(self._quarter_lbl)
 
         # ── HOME PANEL ───────────────────────────────
         self._home_panel = QWidget()
@@ -1860,9 +1864,12 @@ class ScoreHeader(QWidget):
             sit = summary.get("situation") or {}
             if not isinstance(sit, dict):
                 sit = {}
-            self._sit_lbl.setText(sit.get("downDistanceText", "") or "")
+            dd = sit.get("downDistanceText", "") or ""
+            self._sit_lbl.setText(dd)
+            self._sit_lbl.setVisible(bool(dd))
         else:
             self._sit_lbl.setText("")
+            self._sit_lbl.setVisible(False)
 
 
 # ─────────────────────────────────────────────
@@ -2212,6 +2219,7 @@ class ActiveBetsPanel(QWidget):
         self._tbl.setItemDelegate(_TeamRowDelegate(0, self._tbl))
         self._tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._tbl.setShowGrid(False)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         lay.addWidget(self._tbl)
 
         # Empty state label
@@ -2246,7 +2254,7 @@ class ActiveBetsPanel(QWidget):
             FROM legs l JOIN parlays p ON l.parlay_id = p.id
             WHERE CAST(l.game_id AS TEXT) = CAST(? AS TEXT)
               AND p.status IN ('LIVE','PENDING')
-            ORDER BY l.id
+            ORDER BY p.id, l.id
         """, (self._game_id,))
         legs = c.fetchall()
         conn.close()
@@ -2263,8 +2271,12 @@ class ActiveBetsPanel(QWidget):
         self._info_lbl.setText(f"{len(legs)} LEGS TRACKED")
         self._tbl.setRowCount(len(legs))
 
+        prev_par = None
         for r, leg in enumerate(legs):
-            lid, plabel, book, team, player, market, ou, line, odds, live_stat, leg_status = leg
+            lid, plabel, book, team, player, market, ou, line, odds, live_stat, leg_status = leg[:11]
+            par_key = plabel
+            new_parlay = prev_par is not None and par_key != prev_par
+            prev_par = par_key
 
             live_val = live_stat or "—"
             if game:
@@ -2317,6 +2329,7 @@ class ActiveBetsPanel(QWidget):
                 it.setText(str(val))
                 if ci == 0:
                     it.setData(Qt.UserRole, team)
+                    it.setData(int(Qt.UserRole) + 1, new_parlay)
                 if pair:
                     it.setBackground(QColor(pair[0]))
                     it.setForeground(QColor(pair[1]))
@@ -3024,15 +3037,12 @@ class GameTrackerTab(QWidget):
 
         # ── Linescore / boxscore ─────────────────────
         self._boxscore = BoxScore()
-        outer.addWidget(self._boxscore)
 
         # ── Win probability bar ──────────────────────
         self._winprob = WinProbBar()
-        outer.addWidget(self._winprob)
 
         # ── Active bets panel ────────────────────────
         self._legs_panel = ActiveBetsPanel()
-        outer.addWidget(self._legs_panel)
 
         # ── Stats label row ───────────────────────────
         stats_lbl_bar = QWidget()
@@ -3044,7 +3054,6 @@ class GameTrackerTab(QWidget):
         slbl.setStyleSheet(f"color:{TEXT_DIM}; letter-spacing:3px; background:transparent;")
         stats_lbl_lay.addWidget(slbl)
         stats_lbl_lay.addStretch()
-        outer.addWidget(stats_lbl_bar)
 
         # ── Stat boxes row (away LEFT | home RIGHT) ──
         sb_container = QWidget()
@@ -3057,9 +3066,29 @@ class GameTrackerTab(QWidget):
         self._home_stats = StatBox("home")
         sb_lay.addWidget(self._away_stats, 1)
         sb_lay.addWidget(self._home_stats, 1)
-        outer.addWidget(sb_container)
 
-        outer.addStretch()
+        body = QWidget()
+        body.setStyleSheet(f"background:{BG};")
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+        body_lay.setSpacing(0)
+        body_lay.addWidget(self._boxscore)
+        body_lay.addWidget(self._winprob)
+        body_lay.addWidget(self._legs_panel)
+        body_lay.addWidget(stats_lbl_bar)
+        body_lay.addWidget(sb_container)
+        body_lay.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(body)
+        scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
+        scroll.viewport().setStyleSheet(f"background:{BG};")
+        outer.addWidget(scroll, 1)
 
     def set_games(self, games, week_num=None):
         self._games = games
@@ -4609,7 +4638,9 @@ class HeraWindow(QMainWindow):
         self._be.submitted.connect(self._gt._legs_panel.refresh)
         self._be.submitted.connect(self._al.refresh)
 
-        for tab in [self._gt, self._pbp_tab, self._be, self._al, self._ar]:
+        force_charcoal(self._gt, BG)
+        self._stack.addWidget(self._gt)
+        for tab in [self._pbp_tab, self._be, self._al, self._ar]:
             force_charcoal(tab, BG)
             sc = QScrollArea()
             sc.setWidget(tab)
