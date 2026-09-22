@@ -1,4 +1,4 @@
-# hera.py — v4.3.46
+# hera.py — v4.3.47
 # Standalone NFL live game tracker — PC/Windows build
 # CLONE you run: C:\HERA_CLONE\Hera\Scripts\hera.py
 
@@ -70,7 +70,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.46"
+VERSION = "4.3.47"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2300,7 +2300,7 @@ class ActiveBetsPanel(QWidget):
         self._tbl.setItemDelegate(_TeamRowDelegate(0, self._tbl))
         self._tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._tbl.setShowGrid(False)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         lay.addWidget(self._tbl)
 
         # Empty state label
@@ -3199,7 +3199,7 @@ class GameTrackerTab(QWidget):
         # scrolling the tables cannot resize/clip them into the viewport.
         upper = QWidget()
         upper.setStyleSheet(f"background:{BG};")
-        upper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        upper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         up_lay = QVBoxLayout(upper)
         up_lay.setContentsMargins(0, 0, 0, 0)
         up_lay.setSpacing(0)
