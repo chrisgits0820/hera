@@ -1,6 +1,6 @@
-# hera.py — v4.3.49
+# hera.py — v4.3.50
 # Standalone NFL live game tracker — PC/Windows build
-# CLONE you run: C:\HERA_CLONE\Hera\Scripts\hera.py
+# C:\Users\chris\Hera\Script\hera.py
 
 import multiprocessing
 
@@ -8,35 +8,6 @@ multiprocessing.freeze_support()
 
 import sys
 import os
-
-
-def _scrub_pycharm_qt_env():
-    """PyCharm injects its own Qt. That paints a white window after splash."""
-    for k in (
-        "QT_PLUGIN_PATH",
-        "QT_QPA_PLATFORM_PLUGIN_PATH",
-        "QT_QPA_PLATFORM",
-        "QML2_IMPORT_PATH",
-        "QML_IMPORT_PATH",
-        "QT_API",
-        "QT_STYLE_OVERRIDE",
-        "QT_QUICK_CONTROLS_STYLE",
-        "PYQTDESIGNERPATH",
-        "QT_QPA_FONTDIR",
-    ):
-        os.environ.pop(k, None)
-    raw = os.environ.get("PATH", "")
-    keep = []
-    for part in raw.split(os.pathsep):
-        low = part.replace("/", "\\").lower()
-        if any(tag in low for tag in ("pycharm", "jetbrains", "\\jbr\\", "\\jbr/")):
-            continue
-        keep.append(part)
-    os.environ["PATH"] = os.pathsep.join(keep)
-
-
-_scrub_pycharm_qt_env()
-
 import math
 import sqlite3
 import requests
@@ -44,11 +15,15 @@ import time
 import traceback
 from functools import partial
 
-# Point Qt at THIS python's PySide6 plugins only (PNG + window chrome).
+# PyCharm injects Qt paths from the IDE / other projects (white main window).
+# Do not leave QT_PLUGIN_PATH empty — Windows then cannot decode PNG and the
+# splash lock (statue + HERA) disappears.
+for _k in ("QT_QPA_PLATFORM_PLUGIN_PATH", "QML2_IMPORT_PATH", "QT_API"):
+    os.environ.pop(_k, None)
 import PySide6
-_PYSIDE_PLUGINS = os.path.join(os.path.dirname(PySide6.__file__), "plugins")
-if os.path.isdir(_PYSIDE_PLUGINS):
-    os.environ["QT_PLUGIN_PATH"] = _PYSIDE_PLUGINS
+_pyside_plugins = os.path.join(os.path.dirname(PySide6.__file__), "plugins")
+if os.path.isdir(_pyside_plugins):
+    os.environ["QT_PLUGIN_PATH"] = _pyside_plugins
 os.environ["QT_FFMPEG_DEBUG"] = "0"
 os.environ["QT_LOGGING_RULES"] = (
     "qt.multimedia.*=false;qt.multimedia.ffmpeg.*=false;ffmpeg.*=false"
@@ -62,7 +37,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QProgressBar, QSpacerItem, QStyledItemDelegate,
     QStyle, QStyleOptionComboBox, QMessageBox
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent, QPoint, QSize
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent, QPoint
 from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QPixmap, QColor, QPalette, QPainter, QImage, QBrush
 import re
 from datetime import datetime, timedelta
@@ -70,7 +45,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.49"
+VERSION = "4.3.50"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -1543,12 +1518,12 @@ class LoadingScreen(QWidget):
         self._stop_audio()
         games, week_num = self._pending if self._pending is not None else ([], None)
         self.hide()
-        self.close()
         try:
             QApplication.processEvents()
         except Exception:
             pass
         self.ready.emit(games, week_num)
+        self.close()
 
     def _on_fail(self, err):
         self._status = "STARTUP FAILED"
@@ -2300,7 +2275,7 @@ class ActiveBetsPanel(QWidget):
         self._tbl.setItemDelegate(_TeamRowDelegate(0, self._tbl))
         self._tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self._tbl.setShowGrid(False)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         lay.addWidget(self._tbl)
 
         # Empty state label
@@ -3118,67 +3093,70 @@ class GameTrackerTab(QWidget):
         sel_lay.addWidget(self._track_btn)
         outer.addWidget(sel_bar)
 
-        # Score stays on the main window. Putting it inside a QScrollArea
-        # after splash is what painted the window white on Windows/PyCharm.
+        # ── Score header (3-panel, 160px) ────────────
         self._score_hdr = ScoreHeader()
         outer.addWidget(self._score_hdr)
 
+        # ── Linescore / boxscore ─────────────────────
         self._boxscore = BoxScore()
+
+        # ── Win probability bar ──────────────────────
         self._winprob = WinProbBar()
+
+        # ── Active bets panel ────────────────────────
         self._legs_panel = ActiveBetsPanel()
 
+        # ── Stats label row ───────────────────────────
         stats_lbl_bar = QWidget()
         stats_lbl_bar.setStyleSheet(f"background:{BG};")
-        stats_lbl_bar.setFixedHeight(22)
+        stats_lbl_bar.setFixedHeight(28)
         stats_lbl_lay = QHBoxLayout(stats_lbl_bar)
-        stats_lbl_lay.setContentsMargins(8, 0, 8, 0)
+        stats_lbl_lay.setContentsMargins(12, 4, 12, 0)
         slbl = QLabel("PLAYER STATS")
         slbl.setFont(bb(10))
         slbl.setStyleSheet(f"color:{TEXT_DIM}; letter-spacing:3px; background:transparent;")
         stats_lbl_lay.addWidget(slbl)
         stats_lbl_lay.addStretch()
 
+        # ── Stat boxes row (away LEFT | home RIGHT) ──
         sb_container = QWidget()
         sb_container.setStyleSheet(f"background:{BG};")
         sb_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         sb_lay = QHBoxLayout(sb_container)
-        sb_lay.setContentsMargins(0, 0, 0, 0)
-        sb_lay.setSpacing(4)
+        sb_lay.setContentsMargins(8, 0, 8, 8)
+        sb_lay.setSpacing(8)
         sb_lay.setAlignment(Qt.AlignTop)
+
         self._away_stats = StatBox("away")
         self._home_stats = StatBox("home")
         sb_lay.addWidget(self._away_stats, 1)
         sb_lay.addWidget(self._home_stats, 1)
 
-        upper = QWidget()
-        upper.setStyleSheet(f"background:{BG};")
-        upper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        up_lay = QVBoxLayout(upper)
-        up_lay.setContentsMargins(0, 0, 0, 0)
-        up_lay.setSpacing(0)
-        up_lay.addWidget(self._boxscore)
-        up_lay.addWidget(self._winprob)
-        up_lay.addWidget(self._legs_panel)
-        outer.addWidget(upper, 0)
-        outer.addWidget(stats_lbl_bar, 0)
+        body = QWidget()
+        body.setStyleSheet(f"background:{BG};")
+        body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+        body_lay.setSpacing(0)
+        body_lay.setAlignment(Qt.AlignTop)
+        body_lay.addWidget(self._boxscore, 0, Qt.AlignTop)
+        body_lay.addWidget(self._winprob, 0, Qt.AlignTop)
+        body_lay.addWidget(self._legs_panel, 0, Qt.AlignTop)
+        body_lay.addWidget(stats_lbl_bar, 0, Qt.AlignTop)
+        body_lay.addWidget(sb_container, 0, Qt.AlignTop)
 
-        stats_scroll = QScrollArea()
-        stats_scroll.setWidgetResizable(True)
-        stats_scroll.setWidget(sb_container)
-        stats_scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        stats_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        stats_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        stats_scroll.setFrameShape(QFrame.NoFrame)
-        stats_scroll.setMinimumHeight(300)
-        stats_scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
-        stats_scroll.viewport().setStyleSheet(f"background:{BG};")
-        force_charcoal(stats_scroll, BG)
-        force_charcoal(stats_scroll.viewport(), BG)
-        force_charcoal(sb_container, BG)
-        self._body = sb_container
-        self._sb_container = sb_container
-        self._gt_scroll = stats_scroll
-        outer.addWidget(stats_scroll, 1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(body)
+        scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
+        scroll.viewport().setStyleSheet(f"background:{BG};")
+        self._body = body
+        self._gt_scroll = scroll
+        outer.addWidget(scroll, 1)
 
     def set_games(self, games, week_num=None):
         self._games = games
@@ -3300,8 +3278,8 @@ class GameTrackerTab(QWidget):
         )
         # Equalize paired section heights so headers stay aligned
         self._equalize_stat_heights()
-        if getattr(self, "_sb_container", None):
-            self._sb_container.updateGeometry()
+        if getattr(self, "_body", None):
+            self._body.updateGeometry()
 
     def _equalize_stat_heights(self):
         pairs = [
@@ -3318,16 +3296,6 @@ class GameTrackerTab(QWidget):
             right.setMinimumHeight(h)
             left.setFixedHeight(h)
             right.setFixedHeight(h)
-        box_hs = []
-        for box in (self._away_stats, self._home_stats):
-            bh = sum(
-                max(39, int(getattr(s, "_content_h", 39) or 39))
-                for s in (box._pass_sec, box._rush_sec, box._recv_sec)
-            )
-            box.setMinimumHeight(bh)
-            box_hs.append(bh)
-        if getattr(self, "_sb_container", None) and box_hs:
-            self._sb_container.setMinimumHeight(max(box_hs))
 
     def _get_bet_players(self, game_id):
         """Return list of tracked player names for the current game."""
@@ -4801,7 +4769,6 @@ class HeraWindow(QMainWindow):
 # ─────────────────────────────────────────────
 def main():
     print(f"HERA v{VERSION} starting...")
-    print(f"SCRIPT: {os.path.abspath(__file__)}")
     def _hook(et, ev, tb):
         err = "".join(traceback.format_exception(et, ev, tb))
         print("FATAL ERROR:\n", err)
@@ -4815,23 +4782,8 @@ def main():
         except Exception:
             pass
     try:
-        _scrub_pycharm_qt_env()
-        if os.path.isdir(_PYSIDE_PLUGINS):
-            os.environ["QT_PLUGIN_PATH"] = _PYSIDE_PLUGINS
-        from PySide6.QtCore import QCoreApplication
-        if os.path.isdir(_PYSIDE_PLUGINS):
-            QCoreApplication.setLibraryPaths([
-                _PYSIDE_PLUGINS,
-                os.path.join(_PYSIDE_PLUGINS, "platforms"),
-                os.path.join(_PYSIDE_PLUGINS, "styles"),
-                os.path.join(_PYSIDE_PLUGINS, "imageformats"),
-            ])
         app = QApplication(sys.argv)
         app.setStyle("Fusion")
-        try:
-            app.setDesktopSettingsAware(False)
-        except Exception:
-            pass
         pal = QPalette()
         pal.setColor(QPalette.Window, QColor(CHARCOAL))
         pal.setColor(QPalette.WindowText, QColor(TEXT))
@@ -4863,8 +4815,6 @@ def main():
         def open_main(games, week_num):
             try:
                 win = HeraWindow(games or [], week_num)
-                win.setAutoFillBackground(True)
-                force_charcoal(win, CHARCOAL)
                 win.show()
                 win.raise_()
                 win.activateWindow()
