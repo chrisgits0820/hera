@@ -1,8 +1,7 @@
 # hera.py — v4.3.40
 # Standalone NFL live game tracker — PC/Windows build
-# Canonical copies:
-#   Hera/Script/hera.py   (PyCharm / Windows: C:\Users\chris\Hera\Script\hera.py)
-#   Hera/Scripts/hera.py  (launch-hera.bat fallback)
+# C:\Users\chris\Hera\Script\hera.py
+# CLONE: Hera/Scripts/hera.py  (this is the file you run)
 
 import multiprocessing
 
@@ -4860,6 +4859,7 @@ class HeraWindow(QMainWindow):
 # ─────────────────────────────────────────────
 def main():
     print(f"HERA v{VERSION} starting...")
+    print(f"SCRIPT: {os.path.abspath(__file__)}")
     def _hook(et, ev, tb):
         err = "".join(traceback.format_exception(et, ev, tb))
         print("FATAL ERROR:\n", err)
