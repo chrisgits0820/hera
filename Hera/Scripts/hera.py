@@ -45,7 +45,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.35"
+VERSION = "4.3.36"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -1943,6 +1943,7 @@ class BoxScore(QWidget):
             self._row_widgets.append(row)
             self._row_cells.append(None)
 
+        self.setMinimumHeight(33 + 39 + 53 + 53 + 16)
         outer.addWidget(card, 6)
         outer.addStretch(1)
 
@@ -2457,14 +2458,15 @@ class StatSection(QWidget):
         key = (str(ath.get("id") or ""), str(jersey), str(name), str(pos))
         return key, jersey, pos, name, stats
 
+    def _lock_h(self):
+        h = max(39, int(getattr(self, "_content_h", 39) or 39))
+        self.setMinimumHeight(h)
+        self.setFixedHeight(h)
+
     def load(self, group, pos_lookup=None):
         self._content_h = 39  # always at least the color header (_hdr_w height)
         if not group:
-            if getattr(self, "_fp_struct", None) == "empty":
-                return
-            self._clear_rows()
-            self._fp_struct = "empty"
-            return
+            group = {"labels": [], "athletes": [], "totals": []}
 
         labels = group.get("labels", group.get("keys", []))
         athletes = group.get("athletes", [])
@@ -2488,6 +2490,7 @@ class StatSection(QWidget):
         refs = getattr(self, "_refs", None)
         if struct == getattr(self, "_fp_struct", None) and refs:
             if vals == getattr(self, "_fp_vals", None):
+                self._lock_h()
                 return
             for pref, p in zip(refs["players"], packed):
                 _key, jersey, pos, name, stats = p
@@ -2506,6 +2509,7 @@ class StatSection(QWidget):
                         lbl.setText(txt)
             self._fp_vals = vals
             self._content_h = 39 + 32 + 32 * len(packed) + (28 if totals else 0)
+            self._lock_h()
             return
 
         self._clear_rows()
@@ -2585,6 +2589,7 @@ class StatSection(QWidget):
             self._content_h += 28
 
         self._refs = {"players": player_refs, "totals": tot_refs}
+        self._lock_h()
 
 
 class StatBox(QWidget):
@@ -2611,7 +2616,7 @@ class StatBox(QWidget):
         lay.addWidget(self._pass_sec)
         lay.addWidget(self._rush_sec)
         lay.addWidget(self._recv_sec)
-        lay.addStretch()
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
     def load(self, team_color, team_alt, team_name,
              pass_group, rush_group, recv_group, pos_lookup=None):
@@ -3058,9 +3063,11 @@ class GameTrackerTab(QWidget):
         # ── Stat boxes row (away LEFT | home RIGHT) ──
         sb_container = QWidget()
         sb_container.setStyleSheet(f"background:{BG};")
+        sb_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         sb_lay = QHBoxLayout(sb_container)
         sb_lay.setContentsMargins(8, 0, 8, 8)
         sb_lay.setSpacing(8)
+        sb_lay.setAlignment(Qt.AlignTop)
 
         self._away_stats = StatBox("away")
         self._home_stats = StatBox("home")
@@ -3069,15 +3076,16 @@ class GameTrackerTab(QWidget):
 
         body = QWidget()
         body.setStyleSheet(f"background:{BG};")
+        body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         body_lay = QVBoxLayout(body)
         body_lay.setContentsMargins(0, 0, 0, 0)
         body_lay.setSpacing(0)
+        body_lay.setAlignment(Qt.AlignTop)
         body_lay.addWidget(self._boxscore)
         body_lay.addWidget(self._winprob)
         body_lay.addWidget(self._legs_panel)
         body_lay.addWidget(stats_lbl_bar)
         body_lay.addWidget(sb_container)
-        body_lay.addStretch()
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -3088,6 +3096,8 @@ class GameTrackerTab(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
         scroll.viewport().setStyleSheet(f"background:{BG};")
+        self._body = body
+        self._gt_scroll = scroll
         outer.addWidget(scroll, 1)
 
     def set_games(self, games, week_num=None):
@@ -3222,6 +3232,8 @@ class GameTrackerTab(QWidget):
                 getattr(left, "_content_h", 28),
                 getattr(right, "_content_h", 28),
             )
+            left.setMinimumHeight(h)
+            right.setMinimumHeight(h)
             left.setFixedHeight(h)
             right.setFixedHeight(h)
 
