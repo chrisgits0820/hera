@@ -1,4 +1,4 @@
-# hera.py — v4.3.44
+# hera.py — v4.3.45
 # Standalone NFL live game tracker — PC/Windows build
 # CLONE you run: C:\HERA_CLONE\Hera\Scripts\hera.py
 
@@ -70,7 +70,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.44"
+VERSION = "4.3.45"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -3072,62 +3072,6 @@ class GameFetchWorker(QThread):
         return job
 
 
-class _TrackerBodyScroll(QScrollArea):
-    """Width follows the viewport. Height is content only and never shrinks
-    when the scrollbar appears or the user scrolls (that was clipping stats)."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWidgetResizable(False)
-        self._fitting = False
-        self._locked_h = 0
-
-    def reset_height_lock(self):
-        self._locked_h = 0
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self.fit_body()
-
-    def fit_body(self):
-        w = self.widget()
-        if not w or self._fitting:
-            return
-        self._fitting = True
-        try:
-            vw = max(1, self.viewport().width())
-            if w.width() != vw:
-                w.setFixedWidth(vw)
-            h = self._measure(w)
-            self._locked_h = max(self._locked_h, h)
-            h = self._locked_h
-            if w.height() != h:
-                w.setMinimumHeight(h)
-                w.setFixedHeight(h)
-        finally:
-            self._fitting = False
-
-    def _measure(self, w):
-        lay = w.layout()
-        if not lay:
-            return max(1, w.minimumHeight(), w.sizeHint().height())
-        total = 0
-        for i in range(lay.count()):
-            item = lay.itemAt(i)
-            cw = item.widget() if item else None
-            if not cw:
-                continue
-            total += max(
-                cw.minimumHeight(),
-                cw.sizeHint().height(),
-                cw.height() if cw.height() > 1 else 0,
-            )
-        m = lay.contentsMargins()
-        total += m.top() + m.bottom()
-        total += max(0, lay.spacing()) * max(0, lay.count() - 1)
-        return max(1, total)
-
-
 class GameTrackerTab(QWidget):
     game_updated = Signal(object, object, object, object, object, object)
 
@@ -3263,7 +3207,8 @@ class GameTrackerTab(QWidget):
         body_lay.addWidget(stats_lbl_bar)
         body_lay.addWidget(sb_container)
 
-        scroll = _TrackerBodyScroll()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
         scroll.setWidget(body)
         scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -3328,8 +3273,10 @@ class GameTrackerTab(QWidget):
 
     def _load(self, game):
         self._current = game
-        if getattr(self, "_gt_scroll", None):
-            self._gt_scroll.reset_height_lock()
+        if getattr(self, "_body", None):
+            self._body.setMinimumHeight(0)
+        if getattr(self, "_sb_container", None):
+            self._sb_container.setMinimumHeight(0)
         self._fetch.fetch(game, self._week)
         if not self._timer.isActive():
             self._timer.start()
@@ -3401,10 +3348,7 @@ class GameTrackerTab(QWidget):
         )
         # Equalize paired section heights so headers stay aligned
         self._equalize_stat_heights()
-        if getattr(self, "_body", None):
-            self._body.updateGeometry()
-        if getattr(self, "_gt_scroll", None):
-            self._gt_scroll.fit_body()
+        self._pin_tracker_min_height()
 
     def _equalize_stat_heights(self):
         pairs = [
@@ -3432,6 +3376,23 @@ class GameTrackerTab(QWidget):
             box_hs.append(bh)
         if getattr(self, "_sb_container", None) and box_hs:
             self._sb_container.setMinimumHeight(max(box_hs) + 8)
+
+    def _pin_tracker_min_height(self):
+        """Keep PLAYER STATS from collapsing on scroll without resizeEvent
+        setFixedHeight (that path paints a white window after splash)."""
+        body = getattr(self, "_body", None)
+        if not body or not body.layout():
+            return
+        total = 0
+        lay = body.layout()
+        for i in range(lay.count()):
+            item = lay.itemAt(i)
+            cw = item.widget() if item else None
+            if cw:
+                total += max(cw.minimumHeight(), cw.sizeHint().height())
+        if total > 0:
+            body.setMinimumHeight(max(body.minimumHeight(), total))
+        body.updateGeometry()
 
     def _get_bet_players(self, game_id):
         """Return list of tracked player names for the current game."""
