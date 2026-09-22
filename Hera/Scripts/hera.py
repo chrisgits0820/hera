@@ -1,4 +1,4 @@
-# hera.py — v4.3.50
+# hera.py — v4.3.51
 # Standalone NFL live game tracker — PC/Windows build
 # C:\Users\chris\Hera\Script\hera.py
 
@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QProgressBar, QSpacerItem, QStyledItemDelegate,
     QStyle, QStyleOptionComboBox, QMessageBox
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent, QPoint
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent, QPoint, QSize
 from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QPixmap, QColor, QPalette, QPainter, QImage, QBrush
 import re
 from datetime import datetime, timedelta
@@ -45,7 +45,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.50"
+VERSION = "4.3.51"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2528,7 +2528,7 @@ class StatSection(QWidget):
         labels = group.get("labels", group.get("keys", []))
         athletes = group.get("athletes", [])
         totals = group.get("totals", [])
-        stat_labels = tuple(labels[:7])
+        stat_labels = tuple(labels)
 
         packed = []
         for ae in athletes:
@@ -2648,6 +2648,13 @@ class StatSection(QWidget):
         self._refs = {"players": player_refs, "totals": tot_refs}
         self._lock_h()
 
+    def sizeHint(self):
+        h = max(39, int(getattr(self, "_content_h", 39) or 39))
+        return QSize(400, h)
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
 
 class StatBox(QWidget):
     """
@@ -2684,6 +2691,21 @@ class StatBox(QWidget):
         self._pass_sec.load(pass_group, pos_lookup=pos_lookup)
         self._rush_sec.load(rush_group, pos_lookup=pos_lookup)
         self._recv_sec.load(recv_group, pos_lookup=pos_lookup)
+        h = sum(
+            max(39, int(getattr(s, "_content_h", 39) or 39))
+            for s in (self._pass_sec, self._rush_sec, self._recv_sec)
+        )
+        self.setMinimumHeight(h)
+
+    def sizeHint(self):
+        h = sum(
+            max(39, int(getattr(s, "_content_h", 39) or 39))
+            for s in (self._pass_sec, self._rush_sec, self._recv_sec)
+        )
+        return QSize(400, max(h, 39))
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
 
 
 # ─────────────────────────────────────────────
@@ -3010,6 +3032,29 @@ class GameFetchWorker(QThread):
         return job
 
 
+class _TrackerPage(QWidget):
+    """Tells QScrollArea the real page height (box + bets + all stat rows).
+    No resizeEvent. No setFixedHeight. That combination is what went white."""
+
+    def sizeHint(self):
+        return QSize(max(400, self.width() or 400), self._page_h())
+
+    def minimumSizeHint(self):
+        return QSize(200, self._page_h())
+
+    def _page_h(self):
+        lay = self.layout()
+        if not lay:
+            return 1
+        total = 0
+        for i in range(lay.count()):
+            item = lay.itemAt(i)
+            cw = item.widget() if item else None
+            if cw:
+                total += max(cw.minimumHeight(), cw.sizeHint().height())
+        return max(1, total)
+
+
 class GameTrackerTab(QWidget):
     game_updated = Signal(object, object, object, object, object, object)
 
@@ -3132,7 +3177,7 @@ class GameTrackerTab(QWidget):
         sb_lay.addWidget(self._away_stats, 1)
         sb_lay.addWidget(self._home_stats, 1)
 
-        body = QWidget()
+        body = _TrackerPage()
         body.setStyleSheet(f"background:{BG};")
         body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         body_lay = QVBoxLayout(body)
@@ -3279,6 +3324,7 @@ class GameTrackerTab(QWidget):
         # Equalize paired section heights so headers stay aligned
         self._equalize_stat_heights()
         if getattr(self, "_body", None):
+            self._body.setMinimumHeight(self._body.sizeHint().height())
             self._body.updateGeometry()
 
     def _equalize_stat_heights(self):
@@ -3296,6 +3342,12 @@ class GameTrackerTab(QWidget):
             right.setMinimumHeight(h)
             left.setFixedHeight(h)
             right.setFixedHeight(h)
+        for box in (self._away_stats, self._home_stats):
+            bh = sum(
+                max(39, int(getattr(s, "_content_h", 39) or 39))
+                for s in (box._pass_sec, box._rush_sec, box._recv_sec)
+            )
+            box.setMinimumHeight(bh)
 
     def _get_bet_players(self, game_id):
         """Return list of tracked player names for the current game."""
