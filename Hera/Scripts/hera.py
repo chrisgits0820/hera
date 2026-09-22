@@ -1,4 +1,4 @@
-# hera.py — v4.3.52
+# hera.py — v4.3.53
 # Standalone NFL live game tracker — PC/Windows build
 # CLONE you run: C:\HERA_CLONE\Hera\Scripts\hera.py
 
@@ -70,7 +70,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.52"
+VERSION = "4.3.53"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2445,9 +2445,12 @@ class StatSection(QWidget):
         self._build()
 
     # ── widths must match between header row and player rows ──
-    W_NUM = 37  # # column
-    W_POS = 61  # POS column
-    W_STAT = 64  # each stat column
+    # Sized so the widest group (PASSING, 8 columns) still fits two boxes
+    # side by side in the default 1280px window without losing QBR / RTG.
+    W_NUM = 30  # # column
+    W_POS = 46  # POS column
+    W_STAT = 54  # each stat column
+    W_NAME_MIN = 70  # PLAYER column may compress to this before anything clips
 
     def _build(self):
         lay = QVBoxLayout(self)
@@ -2520,6 +2523,9 @@ class StatSection(QWidget):
         lbl.setStyleSheet(f"color:{color}; background:transparent;")
         if expand:
             lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            # Same floor as the player-name cell so header, rows and totals
+            # keep their columns lined up when the window is narrow.
+            lbl.setMinimumWidth(self.W_NAME_MIN)
         else:
             lbl.setFixedWidth(width)
         return lbl
@@ -2638,6 +2644,8 @@ class StatSection(QWidget):
             nm.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
             nm.setStyleSheet(f"color:{TEXT_MID}; background:transparent;")
             nm.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            # Long names must give way to the stat columns, not push them off.
+            nm.setMinimumWidth(self.W_NAME_MIN)
             row_lay.addWidget(nm)
 
             stat_lbls = []
@@ -2673,12 +2681,19 @@ class StatSection(QWidget):
         self._refs = {"players": player_refs, "totals": tot_refs}
         self._lock_h()
 
+    def _min_w(self):
+        """Width below which stat columns would be cut off the right edge."""
+        struct = getattr(self, "_fp_struct", None)
+        ncols = len(struct[0]) if struct else 0
+        return self.W_NUM + self.W_POS + self.W_NAME_MIN + ncols * self.W_STAT
+
     def sizeHint(self):
         h = max(39, int(getattr(self, "_content_h", 39) or 39))
-        return QSize(400, h)
+        return QSize(max(400, self._min_w()), h)
 
     def minimumSizeHint(self):
-        return self.sizeHint()
+        h = max(39, int(getattr(self, "_content_h", 39) or 39))
+        return QSize(self._min_w(), h)
 
 
 class StatBox(QWidget):
@@ -2722,15 +2737,20 @@ class StatBox(QWidget):
         )
         self.setMinimumHeight(h)
 
+    def _secs(self):
+        return (self._pass_sec, self._rush_sec, self._recv_sec)
+
     def sizeHint(self):
-        h = sum(
-            max(39, int(getattr(s, "_content_h", 39) or 39))
-            for s in (self._pass_sec, self._rush_sec, self._recv_sec)
-        )
-        return QSize(400, max(h, 39))
+        h = sum(max(39, int(getattr(s, "_content_h", 39) or 39))
+                for s in self._secs())
+        w = max([400] + [s.minimumSizeHint().width() for s in self._secs()])
+        return QSize(w, max(h, 39))
 
     def minimumSizeHint(self):
-        return self.sizeHint()
+        h = sum(max(39, int(getattr(s, "_content_h", 39) or 39))
+                for s in self._secs())
+        w = max([s.minimumSizeHint().width() for s in self._secs()] or [200])
+        return QSize(w, max(h, 39))
 
 
 # ─────────────────────────────────────────────
@@ -3065,7 +3085,9 @@ class _TrackerPage(QWidget):
         return QSize(max(400, self.width() or 400), self._page_h())
 
     def minimumSizeHint(self):
-        return QSize(200, self._page_h())
+        lay = self.layout()
+        w = lay.totalMinimumSize().width() if lay else 200
+        return QSize(max(200, w), self._page_h())
 
     def _page_h(self):
         lay = self.layout()
