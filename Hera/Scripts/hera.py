@@ -45,7 +45,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.37"
+VERSION = "4.3.38"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -644,25 +644,31 @@ def _sit_blobs(game, summary):
     return [b for b in blobs if isinstance(b, dict)]
 
 
+def _one_sit_line(text):
+    line = " ".join(str(text or "").split()).strip()
+    if not line:
+        return ""
+    up = line.upper()
+    half = len(up) // 2
+    if half >= 6 and up[:half].strip() == up[half:].strip():
+        up = up[:half].strip()
+    return up
+
+
 def down_distance_text(game, summary=None):
-    """ESPN puts down-and-distance on scoreboard situation, summary, or the drive."""
+    """One line only. Prefer ESPN's single downDistanceText; never stack sources."""
     for sit in _sit_blobs(game, summary):
-        for key in ("downDistanceText", "shortDownDistanceText", "possessionText"):
-            raw = sit.get(key)
-            if not raw:
-                continue
-            text = str(raw).strip()
-            if not text:
-                continue
-            if key == "shortDownDistanceText":
-                loc = sit.get("possessionText")
-                if loc and " at " not in text.lower():
-                    text = f"{text} at {loc}"
-            return text.upper()
+        raw = sit.get("downDistanceText")
+        if raw:
+            return _one_sit_line(raw)
+        short = sit.get("shortDownDistanceText")
+        if short:
+            loc = sit.get("possessionText")
+            if loc and " at " not in str(short).lower():
+                return _one_sit_line(f"{short} at {loc}")
+            return _one_sit_line(short)
         down, dist = sit.get("down"), sit.get("distance")
-        if down in (None, "", 0, "0"):
-            continue
-        if dist is None or dist == "":
+        if down in (None, "", 0, "0") or dist in (None, ""):
             continue
         try:
             d = int(down)
@@ -673,7 +679,7 @@ def down_distance_text(game, summary=None):
         loc = sit.get("possessionText")
         if loc:
             label = f"{label} at {loc}"
-        return str(label).upper()
+        return _one_sit_line(label)
     return ""
 
 
@@ -1809,7 +1815,7 @@ class ScoreHeader(QWidget):
         self._sit_lbl = QLabel("")
         self._sit_lbl.setFont(bb(10))
         self._sit_lbl.setAlignment(Qt.AlignCenter)
-        self._sit_lbl.setWordWrap(True)
+        self._sit_lbl.setWordWrap(False)
         self._sit_lbl.setStyleSheet(f"color:{TEXT_DIM}; background:transparent;")
 
         center_lay.addWidget(self._live_dot)
