@@ -45,7 +45,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.38"
+VERSION = "4.3.39"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2395,7 +2395,9 @@ class ActiveBetsPanel(QWidget):
 
             self._tbl.setRowHeight(r, 28)
 
-        self._tbl.setFixedHeight(39 * len(legs) + 41)
+        hh = self._tbl.horizontalHeader().height() or 26
+        self._tbl.setFixedHeight(hh + 28 * len(legs) + 2)
+        self.updateGeometry()
 
 
 # ─────────────────────────────────────────────
@@ -3008,6 +3010,29 @@ class GameFetchWorker(QThread):
         return job
 
 
+class _FitWidthScroll(QScrollArea):
+    """Match body width to the viewport; keep height at content so no fake pad."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(False)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_body()
+
+    def _fit_body(self):
+        w = self.widget()
+        if not w:
+            return
+        vw = max(1, self.viewport().width())
+        w.setFixedWidth(vw)
+        h = w.sizeHint().height()
+        if h < 1:
+            h = w.minimumSizeHint().height()
+        w.setFixedHeight(max(1, h))
+
+
 class GameTrackerTab(QWidget):
     game_updated = Signal(object, object, object, object, object, object)
 
@@ -3107,8 +3132,9 @@ class GameTrackerTab(QWidget):
         # ── Stats label row ───────────────────────────
         stats_lbl_bar = QWidget()
         stats_lbl_bar.setStyleSheet(f"background:{BG};")
+        stats_lbl_bar.setFixedHeight(28)
         stats_lbl_lay = QHBoxLayout(stats_lbl_bar)
-        stats_lbl_lay.setContentsMargins(12, 8, 12, 4)
+        stats_lbl_lay.setContentsMargins(12, 4, 12, 0)
         slbl = QLabel("PLAYER STATS")
         slbl.setFont(bb(10))
         slbl.setStyleSheet(f"color:{TEXT_DIM}; letter-spacing:3px; background:transparent;")
@@ -3131,22 +3157,21 @@ class GameTrackerTab(QWidget):
 
         body = QWidget()
         body.setStyleSheet(f"background:{BG};")
-        body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         body_lay = QVBoxLayout(body)
         body_lay.setContentsMargins(0, 0, 0, 0)
         body_lay.setSpacing(0)
         body_lay.setAlignment(Qt.AlignTop)
-        body_lay.addWidget(self._boxscore)
-        body_lay.addWidget(self._winprob)
-        body_lay.addWidget(self._legs_panel)
-        body_lay.addWidget(stats_lbl_bar)
-        body_lay.addWidget(sb_container)
+        body_lay.addWidget(self._boxscore, 0, Qt.AlignTop)
+        body_lay.addWidget(self._winprob, 0, Qt.AlignTop)
+        body_lay.addWidget(self._legs_panel, 0, Qt.AlignTop)
+        body_lay.addWidget(stats_lbl_bar, 0, Qt.AlignTop)
+        body_lay.addWidget(sb_container, 0, Qt.AlignTop)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
+        scroll = _FitWidthScroll()
         scroll.setWidget(body)
         scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
@@ -3278,6 +3303,8 @@ class GameTrackerTab(QWidget):
         if getattr(self, "_body", None):
             self._body.updateGeometry()
             self._body.adjustSize()
+        if getattr(self, "_gt_scroll", None):
+            self._gt_scroll._fit_body()
 
     def _equalize_stat_heights(self):
         pairs = [
