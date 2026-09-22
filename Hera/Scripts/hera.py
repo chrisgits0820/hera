@@ -1,4 +1,4 @@
-# hera.py — v4.3.40
+# hera.py — v4.3.41
 # Standalone NFL live game tracker — PC/Windows build
 # C:\Users\chris\Hera\Script\hera.py
 # CLONE: Hera/Scripts/hera.py  (this is the file you run)
@@ -46,7 +46,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.40"
+VERSION = "4.3.41"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -3054,41 +3054,31 @@ class _FitWidthScroll(QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWidgetResizable(False)
+        self._fitting = False
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fit_body()
 
     def _fit_body(self):
+        # Re-entry here after setFixedHeight used to white-out the Windows
+        # window after splash (same class of bug as the global * stylesheet).
+        if self._fitting:
+            return
         w = self.widget()
         if not w:
             return
-        vw = max(1, self.viewport().width())
-        w.setFixedWidth(vw)
-        lay = w.layout()
-        if lay:
-            lay.activate()
-            h = max(lay.sizeHint().height(), lay.minimumSize().height())
-        else:
-            h = 0
-        h = max(h, w.sizeHint().height(), w.minimumSizeHint().height(), 1)
-        if lay:
-            stacked = 0
-            for i in range(lay.count()):
-                item = lay.itemAt(i)
-                cw = item.widget() if item else None
-                if cw:
-                    stacked += max(
-                        cw.minimumHeight(),
-                        cw.sizeHint().height(),
-                        cw.minimumSizeHint().height(),
-                    )
-            m = lay.contentsMargins()
-            stacked += m.top() + m.bottom()
-            stacked += max(0, lay.spacing()) * max(0, lay.count() - 1)
-            h = max(h, stacked)
-        w.setMinimumHeight(h)
-        w.setFixedHeight(h)
+        self._fitting = True
+        try:
+            vw = max(1, self.viewport().width())
+            w.setFixedWidth(vw)
+            h = max(1, w.sizeHint().height(), w.minimumSizeHint().height(),
+                    w.minimumHeight())
+            if h != w.height() or w.width() != vw:
+                w.setMinimumHeight(h)
+                w.setFixedHeight(h)
+        finally:
+            self._fitting = False
 
 
 class GameTrackerTab(QWidget):
@@ -3234,6 +3224,9 @@ class GameTrackerTab(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
         scroll.viewport().setStyleSheet(f"background:{BG};")
+        force_charcoal(scroll, BG)
+        force_charcoal(scroll.viewport(), BG)
+        force_charcoal(body, BG)
         self._body = body
         self._gt_scroll = scroll
         outer.addWidget(scroll, 1)
@@ -4906,6 +4899,8 @@ def main():
         def open_main(games, week_num):
             try:
                 win = HeraWindow(games or [], week_num)
+                win.setAutoFillBackground(True)
+                force_charcoal(win, CHARCOAL)
                 win.show()
                 win.raise_()
                 win.activateWindow()
