@@ -45,7 +45,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.36"
+VERSION = "4.3.37"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -613,12 +613,68 @@ def fetch_scoreboard(week=None, seasontype=2):
             "ou": odds.get("overUnder", "—"),
             "home_ml": odds.get("homeTeamOdds", {}).get("moneyLine", "—"),
             "away_ml": odds.get("awayTeamOdds", {}).get("moneyLine", "—"),
+            "situation": comp.get("situation") if isinstance(comp.get("situation"), dict) else {},
         })
     return games, week_num
 
 
 def fetch_summary(game_id):
     return espn_get(ESPN_SUMMARY, params={"event": game_id})
+
+
+def _sit_blobs(game, summary):
+    blobs = []
+    if isinstance(game, dict):
+        blobs.append(game.get("situation"))
+    if isinstance(summary, dict):
+        blobs.append(summary.get("situation"))
+        hdr = summary.get("header") or {}
+        if isinstance(hdr, dict):
+            for comp in hdr.get("competitions") or []:
+                if isinstance(comp, dict):
+                    blobs.append(comp.get("situation"))
+        drives = summary.get("drives") or {}
+        if isinstance(drives, dict):
+            cur = drives.get("current")
+            blobs.append(cur)
+            if isinstance(cur, dict):
+                plays = cur.get("plays") or []
+                if plays:
+                    blobs.append(plays[-1])
+    return [b for b in blobs if isinstance(b, dict)]
+
+
+def down_distance_text(game, summary=None):
+    """ESPN puts down-and-distance on scoreboard situation, summary, or the drive."""
+    for sit in _sit_blobs(game, summary):
+        for key in ("downDistanceText", "shortDownDistanceText", "possessionText"):
+            raw = sit.get(key)
+            if not raw:
+                continue
+            text = str(raw).strip()
+            if not text:
+                continue
+            if key == "shortDownDistanceText":
+                loc = sit.get("possessionText")
+                if loc and " at " not in text.lower():
+                    text = f"{text} at {loc}"
+            return text.upper()
+        down, dist = sit.get("down"), sit.get("distance")
+        if down in (None, "", 0, "0"):
+            continue
+        if dist is None or dist == "":
+            continue
+        try:
+            d = int(down)
+            suf = {1: "ST", 2: "ND", 3: "RD"}.get(d, "TH")
+            label = f"{d}{suf} & {dist}"
+        except Exception:
+            label = f"{down} & {dist}"
+        loc = sit.get("possessionText")
+        if loc:
+            label = f"{label} at {loc}"
+        return str(label).upper()
+    return ""
 
 
 def fetch_linescores(game_id, team_id):
@@ -1860,16 +1916,9 @@ class ScoreHeader(QWidget):
             self._clock_lbl.setVisible(False)
             self._quarter_lbl.setText("")
 
-        if summary:
-            sit = summary.get("situation") or {}
-            if not isinstance(sit, dict):
-                sit = {}
-            dd = sit.get("downDistanceText", "") or ""
-            self._sit_lbl.setText(dd)
-            self._sit_lbl.setVisible(bool(dd))
-        else:
-            self._sit_lbl.setText("")
-            self._sit_lbl.setVisible(False)
+        dd = down_distance_text(game, summary)
+        self._sit_lbl.setText(dd)
+        self._sit_lbl.setVisible(bool(dd) and state == "in")
 
 
 # ─────────────────────────────────────────────
@@ -3220,6 +3269,9 @@ class GameTrackerTab(QWidget):
         )
         # Equalize paired section heights so headers stay aligned
         self._equalize_stat_heights()
+        if getattr(self, "_body", None):
+            self._body.updateGeometry()
+            self._body.adjustSize()
 
     def _equalize_stat_heights(self):
         pairs = [
