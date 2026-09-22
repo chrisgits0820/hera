@@ -1,4 +1,4 @@
-# hera.py — v4.3.48
+# hera.py — v4.3.49
 # Standalone NFL live game tracker — PC/Windows build
 # CLONE you run: C:\HERA_CLONE\Hera\Scripts\hera.py
 
@@ -70,7 +70,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.48"
+VERSION = "4.3.49"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -3118,19 +3118,15 @@ class GameTrackerTab(QWidget):
         sel_lay.addWidget(self._track_btn)
         outer.addWidget(sel_bar)
 
-        # ── Score header scrolls with the page (not frozen) ──
+        # Score stays on the main window. Putting it inside a QScrollArea
+        # after splash is what painted the window white on Windows/PyCharm.
         self._score_hdr = ScoreHeader()
+        outer.addWidget(self._score_hdr)
 
-        # ── Linescore / boxscore ─────────────────────
         self._boxscore = BoxScore()
-
-        # ── Win probability bar ──────────────────────
         self._winprob = WinProbBar()
-
-        # ── Active bets panel ────────────────────────
         self._legs_panel = ActiveBetsPanel()
 
-        # ── Stats label row ───────────────────────────
         stats_lbl_bar = QWidget()
         stats_lbl_bar.setStyleSheet(f"background:{BG};")
         stats_lbl_bar.setFixedHeight(22)
@@ -3142,7 +3138,6 @@ class GameTrackerTab(QWidget):
         stats_lbl_lay.addWidget(slbl)
         stats_lbl_lay.addStretch()
 
-        # ── Stat boxes row (away LEFT | home RIGHT) ──
         sb_container = QWidget()
         sb_container.setStyleSheet(f"background:{BG};")
         sb_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
@@ -3150,38 +3145,40 @@ class GameTrackerTab(QWidget):
         sb_lay.setContentsMargins(0, 0, 0, 0)
         sb_lay.setSpacing(4)
         sb_lay.setAlignment(Qt.AlignTop)
-
         self._away_stats = StatBox("away")
         self._home_stats = StatBox("home")
         sb_lay.addWidget(self._away_stats, 1)
         sb_lay.addWidget(self._home_stats, 1)
 
-        body = QWidget()
-        body.setStyleSheet(f"background:{BG};")
-        body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        body_lay = QVBoxLayout(body)
-        body_lay.setContentsMargins(0, 0, 0, 0)
-        body_lay.setSpacing(0)
-        body_lay.setAlignment(Qt.AlignTop)
-        body_lay.addWidget(self._score_hdr, 0, Qt.AlignTop)
-        body_lay.addWidget(self._boxscore, 0, Qt.AlignTop)
-        body_lay.addWidget(self._winprob, 0, Qt.AlignTop)
-        body_lay.addWidget(self._legs_panel, 0, Qt.AlignTop)
-        body_lay.addWidget(stats_lbl_bar, 0, Qt.AlignTop)
-        body_lay.addWidget(sb_container, 0, Qt.AlignTop)
+        upper = QWidget()
+        upper.setStyleSheet(f"background:{BG};")
+        upper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        up_lay = QVBoxLayout(upper)
+        up_lay.setContentsMargins(0, 0, 0, 0)
+        up_lay.setSpacing(0)
+        up_lay.addWidget(self._boxscore)
+        up_lay.addWidget(self._winprob)
+        up_lay.addWidget(self._legs_panel)
+        outer.addWidget(upper, 0)
+        outer.addWidget(stats_lbl_bar, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(body)
-        scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
-        scroll.viewport().setStyleSheet(f"background:{BG};")
-        self._body = body
-        self._gt_scroll = scroll
-        outer.addWidget(scroll, 1)
+        stats_scroll = QScrollArea()
+        stats_scroll.setWidgetResizable(True)
+        stats_scroll.setWidget(sb_container)
+        stats_scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        stats_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        stats_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        stats_scroll.setFrameShape(QFrame.NoFrame)
+        stats_scroll.setMinimumHeight(300)
+        stats_scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
+        stats_scroll.viewport().setStyleSheet(f"background:{BG};")
+        force_charcoal(stats_scroll, BG)
+        force_charcoal(stats_scroll.viewport(), BG)
+        force_charcoal(sb_container, BG)
+        self._body = sb_container
+        self._sb_container = sb_container
+        self._gt_scroll = stats_scroll
+        outer.addWidget(stats_scroll, 1)
 
     def set_games(self, games, week_num=None):
         self._games = games
@@ -3303,11 +3300,8 @@ class GameTrackerTab(QWidget):
         )
         # Equalize paired section heights so headers stay aligned
         self._equalize_stat_heights()
-        if getattr(self, "_body", None):
-            self._body.updateGeometry()
-            self._body.adjustSize()
-        if getattr(self, "_body", None):
-            self._body.updateGeometry()
+        if getattr(self, "_sb_container", None):
+            self._sb_container.updateGeometry()
 
     def _equalize_stat_heights(self):
         pairs = [
@@ -3324,6 +3318,16 @@ class GameTrackerTab(QWidget):
             right.setMinimumHeight(h)
             left.setFixedHeight(h)
             right.setFixedHeight(h)
+        box_hs = []
+        for box in (self._away_stats, self._home_stats):
+            bh = sum(
+                max(39, int(getattr(s, "_content_h", 39) or 39))
+                for s in (box._pass_sec, box._rush_sec, box._recv_sec)
+            )
+            box.setMinimumHeight(bh)
+            box_hs.append(bh)
+        if getattr(self, "_sb_container", None) and box_hs:
+            self._sb_container.setMinimumHeight(max(box_hs))
 
     def _get_bet_players(self, game_id):
         """Return list of tracked player names for the current game."""
