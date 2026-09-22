@@ -1,4 +1,4 @@
-# hera.py — v4.3.54
+# hera.py — v4.3.55
 # Standalone NFL live game tracker — PC/Windows build
 # CLONE you run: C:\HERA_CLONE\Hera\Scripts\hera.py
 
@@ -70,7 +70,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.54"
+VERSION = "4.3.55"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2600,6 +2600,11 @@ class StatSection(QWidget):
         key = (str(ath.get("id") or ""), str(jersey), str(name), str(pos))
         return key, jersey, pos, name, stats
 
+    def _rows_h(self, n_players, has_totals):
+        """Height of the colored strip + column header + n rows + totals."""
+        return (self._strip_h + self._hdr_h + self._row_h * n_players
+                + (self._tot_h if has_totals else 0))
+
     def _lock_h(self):
         floor = getattr(self, "_strip_h", 39)
         h = max(floor, int(getattr(self, "_content_h", floor) or floor))
@@ -2607,12 +2612,18 @@ class StatSection(QWidget):
         self.setFixedHeight(h)
 
     def load(self, group, pos_lookup=None):
-        self._content_h = getattr(self, "_strip_h", 39)
+        labels = (group or {}).get("labels", (group or {}).get("keys", []))
+        athletes = (group or {}).get("athletes", [])
+        # A poll that came back without a boxscore (ESPN rate limit, timeout,
+        # partial JSON) must not erase stats we already have on screen.
+        if not athletes and getattr(self, "_refs", None) \
+                and self._refs.get("players"):
+            self._lock_h()
+            return
+
         if not group:
             group = {"labels": [], "athletes": [], "totals": []}
 
-        labels = group.get("labels", group.get("keys", []))
-        athletes = group.get("athletes", [])
         totals = group.get("totals", [])
         stat_labels = tuple(labels)
 
@@ -2642,6 +2653,10 @@ class StatSection(QWidget):
         refs = getattr(self, "_refs", None)
         if struct == getattr(self, "_fp_struct", None) and refs and not grew:
             if vals == getattr(self, "_fp_vals", None):
+                # Nothing changed since the last poll. Re-derive the height
+                # from the rows on screen — never assume an empty section.
+                self._content_h = self._rows_h(len(refs["players"]),
+                                               bool(refs.get("totals")))
                 self._lock_h()
                 return
             for pref, p in zip(refs["players"], packed):
@@ -2660,9 +2675,7 @@ class StatSection(QWidget):
                     if lbl.text() != txt:
                         lbl.setText(txt)
             self._fp_vals = vals
-            self._content_h = (self._strip_h + self._hdr_h
-                               + self._row_h * len(packed)
-                               + (self._tot_h if totals else 0))
+            self._content_h = self._rows_h(len(packed), bool(totals))
             self._lock_h()
             return
 
@@ -3420,6 +3433,11 @@ class GameTrackerTab(QWidget):
         away = game["away"]
         home = game["home"]
 
+        # Keep the reader's place; a refresh must not yank the page around.
+        sb = getattr(self, "_gt_scroll", None)
+        sb = sb.verticalScrollBar() if sb else None
+        keep = sb.value() if sb else None
+
         a_pass = get_stat_group(summary, away["id"], "passing")
         a_rush = get_stat_group(summary, away["id"], "rushing")
         a_recv = get_stat_group(summary, away["id"], "receiving")
@@ -3443,8 +3461,17 @@ class GameTrackerTab(QWidget):
         # Equalize paired section heights so headers stay aligned
         self._equalize_stat_heights()
         if getattr(self, "_body", None):
+            lay = self._body.layout()
+            if lay:
+                lay.activate()  # measure the settled layout, not the old one
             self._body.setMinimumHeight(self._body.sizeHint().height())
             self._body.updateGeometry()
+
+        if sb is not None and keep is not None:
+            def _restore(bar=sb, val=keep):
+                bar.setValue(min(val, bar.maximum()))
+            _restore()
+            QTimer.singleShot(0, _restore)  # again once the layout settles
         if os.environ.get("HERA_DEBUG"):
             self._dump_stat_fit()
 
