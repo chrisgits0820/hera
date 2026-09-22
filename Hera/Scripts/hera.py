@@ -1,6 +1,6 @@
-# hera.py — v4.3.51
+# hera.py — v4.3.52
 # Standalone NFL live game tracker — PC/Windows build
-# C:\Users\chris\Hera\Script\hera.py
+# CLONE you run: C:\HERA_CLONE\Hera\Scripts\hera.py
 
 import multiprocessing
 
@@ -8,6 +8,35 @@ multiprocessing.freeze_support()
 
 import sys
 import os
+
+
+def _scrub_pycharm_qt_env():
+    """PyCharm injects its own Qt. That paints a white window after splash."""
+    for k in (
+        "QT_PLUGIN_PATH",
+        "QT_QPA_PLATFORM_PLUGIN_PATH",
+        "QT_QPA_PLATFORM",
+        "QML2_IMPORT_PATH",
+        "QML_IMPORT_PATH",
+        "QT_API",
+        "QT_STYLE_OVERRIDE",
+        "QT_QUICK_CONTROLS_STYLE",
+        "PYQTDESIGNERPATH",
+        "QT_QPA_FONTDIR",
+    ):
+        os.environ.pop(k, None)
+    raw = os.environ.get("PATH", "")
+    keep = []
+    for part in raw.split(os.pathsep):
+        low = part.replace("/", "\\").lower()
+        if any(tag in low for tag in ("pycharm", "jetbrains", "\\jbr\\", "\\jbr/")):
+            continue
+        keep.append(part)
+    os.environ["PATH"] = os.pathsep.join(keep)
+
+
+_scrub_pycharm_qt_env()
+
 import math
 import sqlite3
 import requests
@@ -15,15 +44,11 @@ import time
 import traceback
 from functools import partial
 
-# PyCharm injects Qt paths from the IDE / other projects (white main window).
-# Do not leave QT_PLUGIN_PATH empty — Windows then cannot decode PNG and the
-# splash lock (statue + HERA) disappears.
-for _k in ("QT_QPA_PLATFORM_PLUGIN_PATH", "QML2_IMPORT_PATH", "QT_API"):
-    os.environ.pop(_k, None)
+# Point Qt at THIS python's PySide6 plugins only (PNG + window chrome).
 import PySide6
-_pyside_plugins = os.path.join(os.path.dirname(PySide6.__file__), "plugins")
-if os.path.isdir(_pyside_plugins):
-    os.environ["QT_PLUGIN_PATH"] = _pyside_plugins
+_PYSIDE_PLUGINS = os.path.join(os.path.dirname(PySide6.__file__), "plugins")
+if os.path.isdir(_PYSIDE_PLUGINS):
+    os.environ["QT_PLUGIN_PATH"] = _PYSIDE_PLUGINS
 os.environ["QT_FFMPEG_DEBUG"] = "0"
 os.environ["QT_LOGGING_RULES"] = (
     "qt.multimedia.*=false;qt.multimedia.ffmpeg.*=false;ffmpeg.*=false"
@@ -45,7 +70,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.51"
+VERSION = "4.3.52"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -1518,12 +1543,12 @@ class LoadingScreen(QWidget):
         self._stop_audio()
         games, week_num = self._pending if self._pending is not None else ([], None)
         self.hide()
+        self.close()
         try:
             QApplication.processEvents()
         except Exception:
             pass
         self.ready.emit(games, week_num)
-        self.close()
 
     def _on_fail(self, err):
         self._status = "STARTUP FAILED"
@@ -4834,8 +4859,23 @@ def main():
         except Exception:
             pass
     try:
+        _scrub_pycharm_qt_env()
+        if os.path.isdir(_PYSIDE_PLUGINS):
+            os.environ["QT_PLUGIN_PATH"] = _PYSIDE_PLUGINS
+        from PySide6.QtCore import QCoreApplication
+        if os.path.isdir(_PYSIDE_PLUGINS):
+            QCoreApplication.setLibraryPaths([
+                _PYSIDE_PLUGINS,
+                os.path.join(_PYSIDE_PLUGINS, "platforms"),
+                os.path.join(_PYSIDE_PLUGINS, "styles"),
+                os.path.join(_PYSIDE_PLUGINS, "imageformats"),
+            ])
         app = QApplication(sys.argv)
         app.setStyle("Fusion")
+        try:
+            app.setDesktopSettingsAware(False)
+        except Exception:
+            pass
         pal = QPalette()
         pal.setColor(QPalette.Window, QColor(CHARCOAL))
         pal.setColor(QPalette.WindowText, QColor(TEXT))
@@ -4867,6 +4907,8 @@ def main():
         def open_main(games, week_num):
             try:
                 win = HeraWindow(games or [], week_num)
+                win.setAutoFillBackground(True)
+                force_charcoal(win, CHARCOAL)
                 win.show()
                 win.raise_()
                 win.activateWindow()
