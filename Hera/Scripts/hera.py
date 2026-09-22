@@ -1,4 +1,4 @@
-# hera.py — v4.3.42
+# hera.py — v4.3.43
 # Standalone NFL live game tracker — PC/Windows build
 # CLONE you run: C:\HERA_CLONE\Hera\Scripts\hera.py
 
@@ -70,7 +70,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.42"
+VERSION = "4.3.43"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -3072,39 +3072,6 @@ class GameFetchWorker(QThread):
         return job
 
 
-class _FitWidthScroll(QScrollArea):
-    """Match body width to the viewport; keep height at content so no fake pad."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWidgetResizable(False)
-        self._fitting = False
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._fit_body()
-
-    def _fit_body(self):
-        # Re-entry here after setFixedHeight used to white-out the Windows
-        # window after splash (same class of bug as the global * stylesheet).
-        if self._fitting:
-            return
-        w = self.widget()
-        if not w:
-            return
-        self._fitting = True
-        try:
-            vw = max(1, self.viewport().width())
-            w.setFixedWidth(vw)
-            h = max(1, w.sizeHint().height(), w.minimumSizeHint().height(),
-                    w.minimumHeight())
-            if h != w.height() or w.width() != vw:
-                w.setMinimumHeight(h)
-                w.setFixedHeight(h)
-        finally:
-            self._fitting = False
-
-
 class GameTrackerTab(QWidget):
     game_updated = Signal(object, object, object, object, object, object)
 
@@ -3234,16 +3201,20 @@ class GameTrackerTab(QWidget):
         body_lay.setContentsMargins(0, 0, 0, 0)
         body_lay.setSpacing(0)
         body_lay.setAlignment(Qt.AlignTop)
-        body_lay.addWidget(self._boxscore, 0, Qt.AlignTop)
-        body_lay.addWidget(self._winprob, 0, Qt.AlignTop)
-        body_lay.addWidget(self._legs_panel, 0, Qt.AlignTop)
-        body_lay.addWidget(stats_lbl_bar, 0, Qt.AlignTop)
-        body_lay.addWidget(sb_container, 0, Qt.AlignTop)
+        body_lay.addWidget(self._boxscore)
+        body_lay.addWidget(self._winprob)
+        body_lay.addWidget(self._legs_panel)
+        body_lay.addWidget(stats_lbl_bar)
+        body_lay.addWidget(sb_container)
 
-        scroll = _FitWidthScroll()
+        # widgetResizable=True is the 4.3.36 fix: PLAYER STATS is not crushed
+        # to headers. _FitWidthScroll (4.3.39) locked a short sizeHint and
+        # clipped the passing/rushing/receiving tables.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
         scroll.setWidget(body)
         scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
@@ -3252,6 +3223,7 @@ class GameTrackerTab(QWidget):
         force_charcoal(scroll.viewport(), BG)
         force_charcoal(body, BG)
         self._body = body
+        self._sb_container = sb_container
         self._gt_scroll = scroll
         outer.addWidget(scroll, 1)
 
@@ -3377,9 +3349,6 @@ class GameTrackerTab(QWidget):
         self._equalize_stat_heights()
         if getattr(self, "_body", None):
             self._body.updateGeometry()
-            self._body.adjustSize()
-        if getattr(self, "_gt_scroll", None):
-            self._gt_scroll._fit_body()
 
     def _equalize_stat_heights(self):
         pairs = [
@@ -3396,13 +3365,17 @@ class GameTrackerTab(QWidget):
             right.setMinimumHeight(h)
             left.setFixedHeight(h)
             right.setFixedHeight(h)
+        box_hs = []
         for box in (self._away_stats, self._home_stats):
             bh = sum(
-                max(39, int(s.height() or getattr(s, "_content_h", 39) or 39))
+                max(39, int(getattr(s, "_content_h", 39) or 39))
                 for s in (box._pass_sec, box._rush_sec, box._recv_sec)
             )
             box.setMinimumHeight(bh)
             box.updateGeometry()
+            box_hs.append(bh)
+        if getattr(self, "_sb_container", None) and box_hs:
+            self._sb_container.setMinimumHeight(max(box_hs) + 8)
 
     def _get_bet_players(self, game_id):
         """Return list of tracked player names for the current game."""
