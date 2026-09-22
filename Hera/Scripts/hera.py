@@ -1,4 +1,4 @@
-# hera.py — v4.3.53
+# hera.py — v4.3.54
 # Standalone NFL live game tracker — PC/Windows build
 # CLONE you run: C:\HERA_CLONE\Hera\Scripts\hera.py
 
@@ -70,7 +70,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.53"
+VERSION = "4.3.54"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2428,6 +2428,25 @@ class ActiveBetsPanel(QWidget):
 # ─────────────────────────────────────────────
 # STAT SECTION  (one PASSING / RUSHING / RECEIVING block)
 # ─────────────────────────────────────────────
+class _ElideLabel(QLabel):
+    """Player name that shortens itself rather than shoving stat columns
+    off the right edge. Windows display scaling makes names wider than the
+    space we have; eliding keeps every stat number on screen."""
+
+    def __init__(self, text, color):
+        super().__init__(text)
+        self._color = color
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setFont(self.font())
+        p.setPen(QColor(self._color))
+        fm = QFontMetrics(self.font())
+        p.drawText(self.rect(), int(self.alignment()),
+                   fm.elidedText(self.text(), Qt.ElideRight, max(0, self.width() - 2)))
+        p.end()
+
+
 class StatSection(QWidget):
     """
     A single stat category (PASSING / RUSHING / RECEIVING) for one team.
@@ -2444,13 +2463,47 @@ class StatSection(QWidget):
         self.setStyleSheet(f"QWidget#{_n} {{ background:{BG}; border:none; }}")
         self._build()
 
-    # ── widths must match between header row and player rows ──
-    # Sized so the widest group (PASSING, 8 columns) still fits two boxes
-    # side by side in the default 1280px window without losing QBR / RTG.
-    W_NUM = 30  # # column
-    W_POS = 46  # POS column
-    W_STAT = 54  # each stat column
-    W_NAME_MIN = 70  # PLAYER column may compress to this before anything clips
+    # Fallback widths only. Real widths come from _measure(), which sizes every
+    # column to the text it must hold at the CURRENT font and display scaling —
+    # hard-coded pixels clip on any Windows box not running at 100%.
+    W_NUM = 30
+    W_POS = 46
+    W_STAT = 54
+    W_NAME_MIN = 70
+
+    def _measure(self, stat_labels, packed, totals):
+        """Width each column needs for its widest actual value, at this DPI."""
+        fm_h = QFontMetrics(bb(8))
+        fm_v = QFontMetrics(bb(10))
+        fm_t = QFontMetrics(bb(9))
+        pad = 14
+
+        cols = []
+        for i, lab in enumerate(stat_labels):
+            w = fm_h.horizontalAdvance(str(lab))
+            for p in packed:
+                vals = p[4]
+                if i < len(vals):
+                    v = vals[i]
+                    w = max(w, fm_v.horizontalAdvance(
+                        str(v) if v is not None else "—"))
+            if totals and i < len(totals):
+                w = max(w, fm_t.horizontalAdvance(str(totals[i])))
+            cols.append(w + pad)
+
+        w_num = fm_h.horizontalAdvance("#")
+        w_pos = fm_h.horizontalAdvance("POS")
+        for p in packed:
+            w_num = max(w_num, fm_v.horizontalAdvance(str(p[1])))
+            w_pos = max(w_pos, fm_v.horizontalAdvance(str(p[2])))
+
+        self._col_w = cols
+        self._w_num = w_num + pad
+        self._w_pos = w_pos + pad + 10  # badge has its own padding
+        self._w_name_min = max(70, fm_v.horizontalAdvance("M") * 6)
+        self._row_h = max(32, fm_v.height() + 11)
+        self._hdr_h = max(32, fm_h.height() + 12)
+        self._tot_h = max(28, fm_t.height() + 9)
 
     def _build(self):
         lay = QVBoxLayout(self)
@@ -2458,8 +2511,9 @@ class StatSection(QWidget):
         lay.setSpacing(0)
 
         # Team-colored header strip (PASSING / RUSHING / RECEIVING)
+        self._strip_h = max(39, QFontMetrics(bb(10)).height() + 16)
         self._hdr_w = QWidget()
-        self._hdr_w.setFixedHeight(39)
+        self._hdr_w.setFixedHeight(self._strip_h)
         self._hdr_w.setStyleSheet(f"background:{HDR_BG};")
         hl = QHBoxLayout(self._hdr_w)
         hl.setContentsMargins(10, 0, 10, 0)
@@ -2525,7 +2579,7 @@ class StatSection(QWidget):
             lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             # Same floor as the player-name cell so header, rows and totals
             # keep their columns lined up when the window is narrow.
-            lbl.setMinimumWidth(self.W_NAME_MIN)
+            lbl.setMinimumWidth(getattr(self, "_w_name_min", self.W_NAME_MIN))
         else:
             lbl.setFixedWidth(width)
         return lbl
@@ -2547,12 +2601,13 @@ class StatSection(QWidget):
         return key, jersey, pos, name, stats
 
     def _lock_h(self):
-        h = max(39, int(getattr(self, "_content_h", 39) or 39))
+        floor = getattr(self, "_strip_h", 39)
+        h = max(floor, int(getattr(self, "_content_h", floor) or floor))
         self.setMinimumHeight(h)
         self.setFixedHeight(h)
 
     def load(self, group, pos_lookup=None):
-        self._content_h = 39  # always at least the color header (_hdr_w height)
+        self._content_h = getattr(self, "_strip_h", 39)
         if not group:
             group = {"labels": [], "athletes": [], "totals": []}
 
@@ -2575,8 +2630,17 @@ class StatSection(QWidget):
             str(v) if v is not None else "—"
             for v in p[4][:len(stat_labels)]) for p in packed), tot_vals)
 
+        # Measure before reusing widgets: during a live game a value grows
+        # ("99" -> "100") and would be cut off by the column measured earlier.
+        prev_cols = list(getattr(self, "_col_w", []) or [])
+        self._measure(stat_labels, packed, totals)
+        grew = (len(prev_cols) != len(self._col_w)
+                or any(new > old for new, old in zip(self._col_w, prev_cols)))
+        if prev_cols and not grew:
+            self._col_w = prev_cols  # stable widths, no reflow on every poll
+
         refs = getattr(self, "_refs", None)
-        if struct == getattr(self, "_fp_struct", None) and refs:
+        if struct == getattr(self, "_fp_struct", None) and refs and not grew:
             if vals == getattr(self, "_fp_vals", None):
                 self._lock_h()
                 return
@@ -2596,103 +2660,111 @@ class StatSection(QWidget):
                     if lbl.text() != txt:
                         lbl.setText(txt)
             self._fp_vals = vals
-            self._content_h = 39 + 32 + 32 * len(packed) + (28 if totals else 0)
+            self._content_h = (self._strip_h + self._hdr_h
+                               + self._row_h * len(packed)
+                               + (self._tot_h if totals else 0))
             self._lock_h()
             return
 
         self._clear_rows()
         self._fp_struct = struct
         self._fp_vals = vals
-        self._content_h = 39
+        self._content_h = self._strip_h
 
         # Column-header row
-        hdr_w, hdr_lay = self._row_widget(HDR_BG, h=32)
+        hdr_w, hdr_lay = self._row_widget(HDR_BG, h=self._hdr_h)
         hdr_w.setStyleSheet(
             f"background:{HDR_BG}; border-bottom:1px solid {BORDER};")
-        hdr_lay.addWidget(self._cell("#", self.W_NUM, bb(8), TEXT_MID))
-        hdr_lay.addWidget(self._cell("POS", self.W_POS, bb(8), TEXT_MID))
+        hdr_lay.addWidget(self._cell("#", self._w_num, bb(8), TEXT_MID))
+        hdr_lay.addWidget(self._cell("POS", self._w_pos, bb(8), TEXT_MID))
         hdr_lay.addWidget(self._cell("PLAYER", 0, bb(8), TEXT_MID,
                                      Qt.AlignVCenter | Qt.AlignLeft, expand=True))
-        for sl in stat_labels:
-            hdr_lay.addWidget(self._cell(sl, self.W_STAT, bb(8), TEXT_MID))
+        for i, sl in enumerate(stat_labels):
+            hdr_lay.addWidget(self._cell(sl, self._col_w[i], bb(8), TEXT_MID))
         self._rows_lay.addWidget(hdr_w)
-        self._content_h += 32
+        self._content_h += self._hdr_h
 
         player_refs = []
         for _key, jersey, pos, name, stats in packed:
-            row_w, row_lay = self._row_widget(BG, h=32)
+            row_w, row_lay = self._row_widget(BG, h=self._row_h)
 
-            jersey_lbl = self._cell(jersey, self.W_NUM, bb(10), TEXT_DARK)
+            jersey_lbl = self._cell(jersey, self._w_num, bb(10), TEXT_DARK)
             row_lay.addWidget(jersey_lbl)
 
             pos_bg, pos_fg = POS_COLORS.get(pos, ("#252525", TEXT_DIM))
             pb = BadgeLabel(pos, pos_bg, pos_fg)
             pb.setFont(bb(9))
-            pb.setFixedWidth(self.W_POS - 8)
-            pb.setFixedHeight(23)
+            pb.setFixedWidth(self._w_pos - 8)
+            pb.setFixedHeight(max(18, self._row_h - 9))
             pc = QWidget()
-            pc.setFixedWidth(self.W_POS)
-            pc.setFixedHeight(32)
+            pc.setFixedWidth(self._w_pos)
+            pc.setFixedHeight(self._row_h)
             pcl = QHBoxLayout(pc)
             pcl.setContentsMargins(4, 3, 4, 3)
             pcl.setSpacing(0)
             pcl.addWidget(pb)
             row_lay.addWidget(pc)
 
-            nm = QLabel(name)
+            nm = _ElideLabel(name, TEXT_MID)
             nm.setFont(bb(10))
             nm.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-            nm.setStyleSheet(f"color:{TEXT_MID}; background:transparent;")
+            nm.setStyleSheet("background:transparent;")
             nm.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             # Long names must give way to the stat columns, not push them off.
-            nm.setMinimumWidth(self.W_NAME_MIN)
+            nm.setMinimumWidth(self._w_name_min)
             row_lay.addWidget(nm)
 
             stat_lbls = []
-            for val in stats[:len(stat_labels)]:
+            for i, val in enumerate(stats[:len(stat_labels)]):
                 slbl = self._cell(str(val) if val is not None else "—",
-                                  self.W_STAT, bb(10), TEXT)
+                                  self._col_w[i], bb(10), TEXT)
                 row_lay.addWidget(slbl)
                 stat_lbls.append(slbl)
 
             self._rows_lay.addWidget(row_w)
-            self._content_h += 32
+            self._content_h += self._row_h
             player_refs.append({"jersey": jersey_lbl, "name": nm, "stats": stat_lbls})
 
         tot_refs = []
         if totals:
             tot_w = QWidget()
-            tot_w.setFixedHeight(28)
+            tot_w.setFixedHeight(self._tot_h)
             tot_w.setStyleSheet(f"background:{HDR_BG};")
             tl = QHBoxLayout(tot_w)
             tl.setContentsMargins(0, 0, 0, 0)
             tl.setSpacing(0)
-            tl.addWidget(self._cell("", self.W_NUM + self.W_POS, bb(9), TEXT_DARK))
+            tl.addWidget(self._cell("", self._w_num + self._w_pos, bb(9), TEXT_DARK))
             tl.addWidget(self._cell("TOTALS", 0, bb(9), TEXT_DARK,
                                     Qt.AlignVCenter | Qt.AlignLeft, expand=True))
-            for val in totals[:len(stat_labels)]:
+            for i, val in enumerate(totals[:len(stat_labels)]):
                 tlbl = self._cell(str(val) if val is not None else "—",
-                                  self.W_STAT, bb(9), TEXT_DARK)
+                                  self._col_w[i], bb(9), TEXT_DARK)
                 tl.addWidget(tlbl)
                 tot_refs.append(tlbl)
             self._rows_lay.addWidget(tot_w)
-            self._content_h += 28
+            self._content_h += self._tot_h
 
         self._refs = {"players": player_refs, "totals": tot_refs}
         self._lock_h()
 
     def _min_w(self):
         """Width below which stat columns would be cut off the right edge."""
-        struct = getattr(self, "_fp_struct", None)
-        ncols = len(struct[0]) if struct else 0
-        return self.W_NUM + self.W_POS + self.W_NAME_MIN + ncols * self.W_STAT
+        cols = getattr(self, "_col_w", None)
+        if cols is None:
+            struct = getattr(self, "_fp_struct", None)
+            ncols = len(struct[0]) if struct else 0
+            return (self.W_NUM + self.W_POS + self.W_NAME_MIN
+                    + ncols * self.W_STAT)
+        return (self._w_num + self._w_pos + self._w_name_min + sum(cols))
 
     def sizeHint(self):
-        h = max(39, int(getattr(self, "_content_h", 39) or 39))
+        floor = getattr(self, "_strip_h", 39)
+        h = max(floor, int(getattr(self, "_content_h", floor) or floor))
         return QSize(max(400, self._min_w()), h)
 
     def minimumSizeHint(self):
-        h = max(39, int(getattr(self, "_content_h", 39) or 39))
+        floor = getattr(self, "_strip_h", 39)
+        h = max(floor, int(getattr(self, "_content_h", floor) or floor))
         return QSize(self._min_w(), h)
 
 
@@ -2731,26 +2803,26 @@ class StatBox(QWidget):
         self._pass_sec.load(pass_group, pos_lookup=pos_lookup)
         self._rush_sec.load(rush_group, pos_lookup=pos_lookup)
         self._recv_sec.load(recv_group, pos_lookup=pos_lookup)
-        h = sum(
-            max(39, int(getattr(s, "_content_h", 39) or 39))
-            for s in (self._pass_sec, self._rush_sec, self._recv_sec)
-        )
-        self.setMinimumHeight(h)
+        self.setMinimumHeight(self._stack_h())
 
     def _secs(self):
         return (self._pass_sec, self._rush_sec, self._recv_sec)
 
+    def _stack_h(self):
+        """Rendered height. Sections are stretched to match the other team's
+        matching section, so this team's own row counts are not the answer —
+        using them makes the page short and clips the bottom rows."""
+        return sum(max(39, int(getattr(s, "_content_h", 39) or 39),
+                       s.minimumHeight())
+                   for s in self._secs())
+
     def sizeHint(self):
-        h = sum(max(39, int(getattr(s, "_content_h", 39) or 39))
-                for s in self._secs())
         w = max([400] + [s.minimumSizeHint().width() for s in self._secs()])
-        return QSize(w, max(h, 39))
+        return QSize(w, max(self._stack_h(), 39))
 
     def minimumSizeHint(self):
-        h = sum(max(39, int(getattr(s, "_content_h", 39) or 39))
-                for s in self._secs())
         w = max([s.minimumSizeHint().width() for s in self._secs()] or [200])
-        return QSize(w, max(h, 39))
+        return QSize(w, max(self._stack_h(), 39))
 
 
 # ─────────────────────────────────────────────
@@ -3373,6 +3445,23 @@ class GameTrackerTab(QWidget):
         if getattr(self, "_body", None):
             self._body.setMinimumHeight(self._body.sizeHint().height())
             self._body.updateGeometry()
+        if os.environ.get("HERA_DEBUG"):
+            self._dump_stat_fit()
+
+    def _dump_stat_fit(self):
+        """HERA_DEBUG=1 prints whether any stat column lacks room to draw."""
+        try:
+            scr = QApplication.primaryScreen()
+            print(f"[fit] dpi={scr.logicalDotsPerInch():.0f} "
+                  f"ratio={scr.devicePixelRatio():.2f} "
+                  f"scroll_vp={self._gt_scroll.viewport().width()}")
+            for side, box in (("away", self._away_stats), ("home", self._home_stats)):
+                for nm, sec in (("PASS", box._pass_sec), ("RUSH", box._rush_sec),
+                                ("RECV", box._recv_sec)):
+                    print(f"[fit] {side} {nm} need={sec._min_w()} have={sec.width()} "
+                          f"h_need={sec._content_h} h_have={sec.height()}")
+        except Exception:
+            traceback.print_exc()
 
     def _equalize_stat_heights(self):
         pairs = [
@@ -3390,11 +3479,8 @@ class GameTrackerTab(QWidget):
             left.setFixedHeight(h)
             right.setFixedHeight(h)
         for box in (self._away_stats, self._home_stats):
-            bh = sum(
-                max(39, int(getattr(s, "_content_h", 39) or 39))
-                for s in (box._pass_sec, box._rush_sec, box._recv_sec)
-            )
-            box.setMinimumHeight(bh)
+            box.setMinimumHeight(box._stack_h())
+            box.updateGeometry()
 
     def _get_bet_players(self, game_id):
         """Return list of tracked player names for the current game."""
