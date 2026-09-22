@@ -1,4 +1,4 @@
-# hera.py — v4.3.45
+# hera.py — v4.3.46
 # Standalone NFL live game tracker — PC/Windows build
 # CLONE you run: C:\HERA_CLONE\Hera\Scripts\hera.py
 
@@ -70,7 +70,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.45"
+VERSION = "4.3.46"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -3184,6 +3184,7 @@ class GameTrackerTab(QWidget):
         sb_container = QWidget()
         sb_container.setStyleSheet(f"background:{BG};")
         sb_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        sb_container.setMinimumHeight(1)
         sb_lay = QHBoxLayout(sb_container)
         sb_lay.setContentsMargins(8, 0, 8, 8)
         sb_lay.setSpacing(8)
@@ -3194,35 +3195,37 @@ class GameTrackerTab(QWidget):
         sb_lay.addWidget(self._away_stats, 1)
         sb_lay.addWidget(self._home_stats, 1)
 
-        body = QWidget()
-        body.setStyleSheet(f"background:{BG};")
-        body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        body_lay = QVBoxLayout(body)
-        body_lay.setContentsMargins(0, 0, 0, 0)
-        body_lay.setSpacing(0)
-        body_lay.setAlignment(Qt.AlignTop)
-        body_lay.addWidget(self._boxscore)
-        body_lay.addWidget(self._winprob)
-        body_lay.addWidget(self._legs_panel)
-        body_lay.addWidget(stats_lbl_bar)
-        body_lay.addWidget(sb_container)
+        # Boxscore + bets stay above. PLAYER STATS is its own scroll so
+        # scrolling the tables cannot resize/clip them into the viewport.
+        upper = QWidget()
+        upper.setStyleSheet(f"background:{BG};")
+        upper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        up_lay = QVBoxLayout(upper)
+        up_lay.setContentsMargins(0, 0, 0, 0)
+        up_lay.setSpacing(0)
+        up_lay.addWidget(self._boxscore)
+        up_lay.addWidget(self._winprob)
+        up_lay.addWidget(self._legs_panel)
+        outer.addWidget(upper, 0)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(body)
-        scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
-        scroll.viewport().setStyleSheet(f"background:{BG};")
-        force_charcoal(scroll, BG)
-        force_charcoal(scroll.viewport(), BG)
-        force_charcoal(body, BG)
-        self._body = body
+        outer.addWidget(stats_lbl_bar, 0)
+
+        stats_scroll = QScrollArea()
+        stats_scroll.setWidgetResizable(True)
+        stats_scroll.setWidget(sb_container)
+        stats_scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        stats_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        stats_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        stats_scroll.setFrameShape(QFrame.NoFrame)
+        stats_scroll.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
+        stats_scroll.viewport().setStyleSheet(f"background:{BG};")
+        force_charcoal(stats_scroll, BG)
+        force_charcoal(stats_scroll.viewport(), BG)
+        force_charcoal(sb_container, BG)
+        self._body = sb_container
         self._sb_container = sb_container
-        self._gt_scroll = scroll
-        outer.addWidget(scroll, 1)
+        self._gt_scroll = stats_scroll
+        outer.addWidget(stats_scroll, 1)
 
     def set_games(self, games, week_num=None):
         self._games = games
@@ -3273,8 +3276,6 @@ class GameTrackerTab(QWidget):
 
     def _load(self, game):
         self._current = game
-        if getattr(self, "_body", None):
-            self._body.setMinimumHeight(0)
         if getattr(self, "_sb_container", None):
             self._sb_container.setMinimumHeight(0)
         self._fetch.fetch(game, self._week)
