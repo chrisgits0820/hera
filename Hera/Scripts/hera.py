@@ -1,6 +1,8 @@
-# hera.py — v4.1.7
+# hera.py — v4.3.40
 # Standalone NFL live game tracker — PC/Windows build
-# C:\Users\chris\Hera\Script\hera.py
+# Canonical copies:
+#   Hera/Script/hera.py   (PyCharm / Windows: C:\Users\chris\Hera\Script\hera.py)
+#   Hera/Scripts/hera.py  (launch-hera.bat fallback)
 
 import multiprocessing
 
@@ -37,7 +39,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QProgressBar, QSpacerItem, QStyledItemDelegate,
     QStyle, QStyleOptionComboBox, QMessageBox
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent, QPoint
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRect, QEvent, QPoint, QSize
 from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QPixmap, QColor, QPalette, QPainter, QImage, QBrush
 import re
 from datetime import datetime, timedelta
@@ -45,7 +47,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
-VERSION = "4.3.39"
+VERSION = "4.3.40"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HERA_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 DATA_DIR = os.path.join(HERA_DIR, "Data")
@@ -2420,9 +2422,10 @@ class StatSection(QWidget):
         self._build()
 
     # ── widths must match between header row and player rows ──
-    W_NUM = 37  # # column
-    W_POS = 61  # POS column
-    W_STAT = 64  # each stat column
+    W_NUM = 32  # # column
+    W_POS = 48  # POS column
+    W_NAME = 88  # PLAYER column floor — remaining width goes to stats
+    W_STAT = 36  # each stat column minimum (grows with stretch)
 
     def _build(self):
         lay = QVBoxLayout(self)
@@ -2492,12 +2495,24 @@ class StatSection(QWidget):
         lbl = QLabel(text)
         lbl.setFont(font)
         lbl.setAlignment(align)
+        lbl.setWordWrap(False)
+        lbl.setTextFormat(Qt.PlainText)
         lbl.setStyleSheet(f"color:{color}; background:transparent;")
         if expand:
+            lbl.setMinimumWidth(max(1, width))
             lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        else:
+        elif width:
             lbl.setFixedWidth(width)
         return lbl
+
+    def sizeHint(self):
+        h = max(39, int(getattr(self, "_content_h", 39) or 39))
+        n = max(1, int(getattr(self, "_n_cols", 6) or 6))
+        w = self.W_NUM + self.W_POS + self.W_NAME + self.W_STAT * n
+        return QSize(w, h)
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
 
     # ── populate ─────────────────────────────────────────────────
 
@@ -2528,7 +2543,9 @@ class StatSection(QWidget):
         labels = group.get("labels", group.get("keys", []))
         athletes = group.get("athletes", [])
         totals = group.get("totals", [])
-        stat_labels = tuple(labels[:7])
+        # Show every ESPN column — clipping used to hide INT / LNG / RTG / etc.
+        stat_labels = tuple(labels)
+        self._n_cols = len(stat_labels)
 
         packed = []
         for ae in athletes:
@@ -2578,12 +2595,12 @@ class StatSection(QWidget):
         hdr_w, hdr_lay = self._row_widget(HDR_BG, h=32)
         hdr_w.setStyleSheet(
             f"background:{HDR_BG}; border-bottom:1px solid {BORDER};")
-        hdr_lay.addWidget(self._cell("#", self.W_NUM, bb(8), TEXT_MID))
-        hdr_lay.addWidget(self._cell("POS", self.W_POS, bb(8), TEXT_MID))
-        hdr_lay.addWidget(self._cell("PLAYER", 0, bb(8), TEXT_MID,
-                                     Qt.AlignVCenter | Qt.AlignLeft, expand=True))
+        hdr_lay.addWidget(self._cell("#", self.W_NUM, bb(8), TEXT_MID), 0)
+        hdr_lay.addWidget(self._cell("POS", self.W_POS, bb(8), TEXT_MID), 0)
+        hdr_lay.addWidget(self._cell("PLAYER", self.W_NAME, bb(8), TEXT_MID,
+                                     Qt.AlignVCenter | Qt.AlignLeft, expand=True), 2)
         for sl in stat_labels:
-            hdr_lay.addWidget(self._cell(sl, self.W_STAT, bb(8), TEXT_MID))
+            hdr_lay.addWidget(self._cell(sl, self.W_STAT, bb(8), TEXT_MID, expand=True), 1)
         self._rows_lay.addWidget(hdr_w)
         self._content_h += 32
 
@@ -2592,34 +2609,40 @@ class StatSection(QWidget):
             row_w, row_lay = self._row_widget(BG, h=32)
 
             jersey_lbl = self._cell(jersey, self.W_NUM, bb(10), TEXT_DARK)
-            row_lay.addWidget(jersey_lbl)
+            row_lay.addWidget(jersey_lbl, 0)
 
             pos_bg, pos_fg = POS_COLORS.get(pos, ("#252525", TEXT_DIM))
             pb = BadgeLabel(pos, pos_bg, pos_fg)
             pb.setFont(bb(9))
-            pb.setFixedWidth(self.W_POS - 8)
+            pb.setMinimumWidth(max(28, self.W_POS - 8))
             pb.setFixedHeight(23)
             pc = QWidget()
-            pc.setFixedWidth(self.W_POS)
+            pc.setMinimumWidth(self.W_POS)
             pc.setFixedHeight(32)
+            pc.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
             pcl = QHBoxLayout(pc)
             pcl.setContentsMargins(4, 3, 4, 3)
             pcl.setSpacing(0)
             pcl.addWidget(pb)
-            row_lay.addWidget(pc)
+            row_lay.addWidget(pc, 0)
 
             nm = QLabel(name)
             nm.setFont(bb(10))
             nm.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            nm.setWordWrap(False)
             nm.setStyleSheet(f"color:{TEXT_MID}; background:transparent;")
+            nm.setMinimumWidth(self.W_NAME)
             nm.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            row_lay.addWidget(nm)
+            row_lay.addWidget(nm, 2)
 
             stat_lbls = []
-            for val in stats[:len(stat_labels)]:
+            row_vals = list(stats[:len(stat_labels)])
+            while len(row_vals) < len(stat_labels):
+                row_vals.append("—")
+            for val in row_vals:
                 slbl = self._cell(str(val) if val is not None else "—",
-                                  self.W_STAT, bb(10), TEXT)
-                row_lay.addWidget(slbl)
+                                  self.W_STAT, bb(10), TEXT, expand=True)
+                row_lay.addWidget(slbl, 1)
                 stat_lbls.append(slbl)
 
             self._rows_lay.addWidget(row_w)
@@ -2634,13 +2657,13 @@ class StatSection(QWidget):
             tl = QHBoxLayout(tot_w)
             tl.setContentsMargins(0, 0, 0, 0)
             tl.setSpacing(0)
-            tl.addWidget(self._cell("", self.W_NUM + self.W_POS, bb(9), TEXT_DARK))
-            tl.addWidget(self._cell("TOTALS", 0, bb(9), TEXT_DARK,
-                                    Qt.AlignVCenter | Qt.AlignLeft, expand=True))
+            tl.addWidget(self._cell("", self.W_NUM + self.W_POS, bb(9), TEXT_DARK), 0)
+            tl.addWidget(self._cell("TOTALS", self.W_NAME, bb(9), TEXT_DARK,
+                                    Qt.AlignVCenter | Qt.AlignLeft, expand=True), 2)
             for val in totals[:len(stat_labels)]:
                 tlbl = self._cell(str(val) if val is not None else "—",
-                                  self.W_STAT, bb(9), TEXT_DARK)
-                tl.addWidget(tlbl)
+                                  self.W_STAT, bb(9), TEXT_DARK, expand=True)
+                tl.addWidget(tlbl, 1)
                 tot_refs.append(tlbl)
             self._rows_lay.addWidget(tot_w)
             self._content_h += 28
@@ -2684,6 +2707,22 @@ class StatBox(QWidget):
         self._pass_sec.load(pass_group, pos_lookup=pos_lookup)
         self._rush_sec.load(rush_group, pos_lookup=pos_lookup)
         self._recv_sec.load(recv_group, pos_lookup=pos_lookup)
+        h = sum(
+            max(39, int(getattr(s, "_content_h", 39) or 39))
+            for s in (self._pass_sec, self._rush_sec, self._recv_sec)
+        )
+        self.setMinimumHeight(h)
+        self.updateGeometry()
+
+    def sizeHint(self):
+        h = sum(
+            max(39, int(getattr(s, "_content_h", 39) or 39))
+            for s in (self._pass_sec, self._rush_sec, self._recv_sec)
+        )
+        return QSize(400, h)
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
 
 
 # ─────────────────────────────────────────────
@@ -3027,10 +3066,30 @@ class _FitWidthScroll(QScrollArea):
             return
         vw = max(1, self.viewport().width())
         w.setFixedWidth(vw)
-        h = w.sizeHint().height()
-        if h < 1:
-            h = w.minimumSizeHint().height()
-        w.setFixedHeight(max(1, h))
+        lay = w.layout()
+        if lay:
+            lay.activate()
+            h = max(lay.sizeHint().height(), lay.minimumSize().height())
+        else:
+            h = 0
+        h = max(h, w.sizeHint().height(), w.minimumSizeHint().height(), 1)
+        if lay:
+            stacked = 0
+            for i in range(lay.count()):
+                item = lay.itemAt(i)
+                cw = item.widget() if item else None
+                if cw:
+                    stacked += max(
+                        cw.minimumHeight(),
+                        cw.sizeHint().height(),
+                        cw.minimumSizeHint().height(),
+                    )
+            m = lay.contentsMargins()
+            stacked += m.top() + m.bottom()
+            stacked += max(0, lay.spacing()) * max(0, lay.count() - 1)
+            h = max(h, stacked)
+        w.setMinimumHeight(h)
+        w.setFixedHeight(h)
 
 
 class GameTrackerTab(QWidget):
@@ -3157,7 +3216,7 @@ class GameTrackerTab(QWidget):
 
         body = QWidget()
         body.setStyleSheet(f"background:{BG};")
-        body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        body.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         body_lay = QVBoxLayout(body)
         body_lay.setContentsMargins(0, 0, 0, 0)
         body_lay.setSpacing(0)
@@ -3321,6 +3380,13 @@ class GameTrackerTab(QWidget):
             right.setMinimumHeight(h)
             left.setFixedHeight(h)
             right.setFixedHeight(h)
+        for box in (self._away_stats, self._home_stats):
+            bh = sum(
+                max(39, int(s.height() or getattr(s, "_content_h", 39) or 39))
+                for s in (box._pass_sec, box._rush_sec, box._recv_sec)
+            )
+            box.setMinimumHeight(bh)
+            box.updateGeometry()
 
     def _get_bet_players(self, game_id):
         """Return list of tracked player names for the current game."""
